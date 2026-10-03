@@ -135,13 +135,18 @@ def _edge_support(q: np.ndarray, edges: np.ndarray) -> float:
 
 
 def detect_page(img: np.ndarray, valid: np.ndarray | None = None) -> PageQuad:
-    """Find the album page: the largest well-supported quadrilateral.
+    """The best-scoring page candidate; see :func:`detect_pages`."""
+    return detect_pages(img, valid)[0]
+
+
+def detect_pages(img: np.ndarray, valid: np.ndarray | None = None) -> list[PageQuad]:
+    """Candidate pages, best first: well-supported quadrilaterals.
 
     ``valid`` marks pixels that hold real image content (a stitched mosaic has
     empty areas around it). Two candidate generators are tried, edges and
-    colour contrast against the surrounding background, and the best-scoring
-    quad wins. If neither finds a page, the whole valid area is returned, which
-    is right when the page fills the frame.
+    colour contrast against the surrounding background. Several can come back
+    when more than one page is in view. If none is found, the whole valid area
+    is returned, which is right when the page fills the frame.
     """
     H, W = img.shape[:2]
     if valid is None:
@@ -177,11 +182,11 @@ def detect_page(img: np.ndarray, valid: np.ndarray | None = None) -> PageQuad:
         thr = max(12.0, 3.0 * float(np.percentile(dist[ring], 75)))
         fg = ((dist > thr) & (vmask > 0)).astype(np.uint8)
         fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
-        fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, np.ones((15, 15), np.uint8))
+        fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))  # small: keep gaps between pages
         found, _ = cv2.findContours(fg, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         contours += [("color", c) for c in found]
 
-    best: PageQuad | None = None
+    found_quads: list[PageQuad] = []
     for method, cnt in contours:
         carea = cv2.contourArea(cnt)
         if carea < 0.1 * valid_area:
@@ -198,15 +203,13 @@ def detect_page(img: np.ndarray, valid: np.ndarray | None = None) -> PageQuad:
                 continue
             support = _edge_support(q, support_edges)
             score = area_frac * fill * (0.3 + 0.7 * support)
-            if best is None or score > best.score:
-                best = PageQuad(q / f, method, float(score))
+            found_quads.append(PageQuad((q / f).astype(np.float32), method, float(score)))
 
-    if best is None:
+    if not found_quads:
         pts = cv2.findNonZero(vmask)
         box = cv2.boxPoints(cv2.minAreaRect(pts))
-        best = PageQuad(order_corners(box) / f, "fallback", 0.0)
-    best.corners = best.corners.astype(np.float32)
-    return best
+        found_quads.append(PageQuad((order_corners(box) / f).astype(np.float32), "fallback", 0.0))
+    return sorted(found_quads, key=lambda c: -c.score)
 
 
 def focal_px_from_35mm(focal_35mm: float, width: int, height: int) -> float:

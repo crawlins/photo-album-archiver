@@ -59,7 +59,7 @@ def main(argv: list[str] | None = None) -> int:
 
     s = sub.add_parser("synth", help="generate synthetic test photos of a page")
     s.add_argument("outdir", type=Path)
-    s.add_argument("--kind", choices=["glare", "stitch"], default="glare")
+    s.add_argument("--kind", choices=["glare", "stitch", "pair"], default="glare")
     s.add_argument("--seed", type=int, default=1)
     s.add_argument("-n", type=int, default=4)
     s.set_defaults(func=_cmd_synth)

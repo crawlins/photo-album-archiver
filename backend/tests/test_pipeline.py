@@ -39,3 +39,26 @@ def test_unrelated_photo_is_dropped():
     res = process_page(case.images + [junk])
     assert res.report.dropped == [3]
     assert score(res.image, case.page).corner_err < 1.0
+
+
+@pytest.mark.parametrize("seed,n", [(20, 4), (25, 3), (27, 4)])
+def test_two_pages_side_by_side_keeps_the_photographed_page(seed, n):
+    # Close-ups of one page with its neighbour partly in view, plus one wide
+    # shot showing both pages whole. The result must be the page the photos
+    # are of, not the neighbour and not both pages as one.
+    case = make_case(seed, "pair", n)
+    res = process_page(case.images)
+    s = score(res.image, case.page)
+    assert res.report.dropped == []
+    assert s.corner_err < 1.0
+    assert s.aspect_err < 0.02
+    assert s.glare_px < 0.002
+
+
+def test_single_close_up_with_neighbour_partly_in_view():
+    case = make_case(21, "pair", 1)
+    assert len(case.images) == 1
+    res = process_page(case.images)
+    s = score(res.image, case.page)
+    assert s.corner_err < 1.0
+    assert s.aspect_err < 0.02

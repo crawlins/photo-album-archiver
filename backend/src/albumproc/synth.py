@@ -185,6 +185,9 @@ def make_case(seed: int, kind: str = "glare", n: int = 4) -> SynthPage:
     kind="glare": n full-page shots from different angles, each with glare.
     kind="stitch": an oversized page shot in overlapping parts (left/right,
     or a 2x2 grid when n >= 4), each with glare.
+    kind="pair": two pages lying flat side by side; the shots are of one of
+    them (the ground truth) and the neighbouring page is partly in view. The
+    last shot is wider and shows both pages in full.
     """
     rng = np.random.default_rng(seed)
     if kind == "stitch" and n >= 4:
@@ -195,6 +198,24 @@ def make_case(seed: int, kind: str = "glare", n: int = 4) -> SynthPage:
         page = make_page(rng)
     ph, pw = page.shape[:2]
     margin = int(0.6 * max(pw, ph))
+    if kind == "pair":
+        # The neighbour sits to the left or right with a small gap of table.
+        other = make_page(rng, pw, ph)
+        gap = int(0.03 * pw)
+        left = bool(rng.integers(0, 2))
+        scene = make_table(rng, 2 * pw + gap + 2 * margin, ph + 2 * margin)
+        x_page = margin + (pw + gap if left else 0)
+        x_other = margin + (0 if left else pw + gap)
+        scene[margin : margin + ph, x_page : x_page + pw] = page
+        scene[margin : margin + ph, x_other : x_other + pw] = other
+        rect = (x_page, margin, pw, ph)
+        targets = [(0.5 + rng.uniform(-0.05, 0.05), 0.5 + rng.uniform(-0.05, 0.05)) for _ in range(max(1, n - 1))]
+        shots = make_shots(rng, scene, rect, targets, fill=0.62)
+        if n >= 2:
+            # A wide shot of both pages, aimed between them.
+            both_x = (0.5 * (pw + gap) / pw) * (-1 if left else 1)
+            shots += make_shots(rng, scene, rect, [(0.5 + both_x, 0.5)], fill=0.36)
+        return SynthPage(page, scene, (x_page, margin), shots)
     scene = make_table(rng, pw + 2 * margin, ph + 2 * margin)
     scene[margin : margin + ph, margin : margin + pw] = page
     rect = (margin, margin, pw, ph)
