@@ -1,0 +1,41 @@
+import numpy as np
+import pytest
+
+from albumproc import process_page
+from albumproc.evaluate import score
+from albumproc.synth import make_case
+
+
+@pytest.mark.parametrize("seed", [10, 13])
+def test_glare_removed_by_merging_shots(seed):
+    case = make_case(seed, "glare", 3)
+    res = process_page(case.images)
+    s = score(res.image, case.page)
+    assert res.report.dropped == []
+    assert res.report.coverage > 0.99
+    assert s.glare_px < 0.001  # residual glare: under 0.1% of the page
+    assert s.corner_err < 1.0  # page edges within 1% of the diagonal
+    assert s.aspect_err < 0.02
+
+    single = process_page([case.images[res.report.reference]])
+    assert score(single.image, case.page).glare_px > 5 * max(s.glare_px, 1e-4)
+
+
+@pytest.mark.parametrize("n", [2, 4])
+def test_oversized_page_stitched_from_parts(n):
+    case = make_case(10, "stitch", n)
+    res = process_page(case.images)
+    s = score(res.image, case.page)
+    assert res.report.coverage > 0.99
+    assert s.corner_err < 1.0
+    assert s.aspect_err < 0.03
+    assert s.mae < 10
+
+
+def test_unrelated_photo_is_dropped():
+    case = make_case(11, "glare", 3)
+    rng = np.random.default_rng(0)
+    junk = (rng.random((1500, 2000, 3)) * 255).astype(np.uint8)
+    res = process_page(case.images + [junk])
+    assert res.report.dropped == [3]
+    assert score(res.image, case.page).corner_err < 1.0
