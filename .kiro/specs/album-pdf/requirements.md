@@ -68,13 +68,14 @@ size once, so that every printed page comes out the same size as the original.
 
 #### Acceptance criteria
 
-1. THE system SHALL require a page size for every page, given album-wide on
-   the command line or in `album.json`, and optionally overridden per page in
-   `album.json`.
+1. THE system SHALL take each page's size from, in order of precedence, the
+   page's entry in `album.json`, the album-wide `page_size` in `album.json`
+   (which the capture app writes when an album is created), and the command
+   line.
 2. THE system SHALL accept page sizes as `<w>x<h><unit>` where unit is `in`,
    `mm` or `cm`, and SHALL accept the named sizes `letter`, `a4` and `a3`.
-3. IF no page size is available for a page, THEN THE system SHALL fail before
-   processing any page, naming the pages that lack one.
+3. IF no page size is given anywhere, THEN THE system SHALL use 8.5 x 11
+   inches (US letter), the capture app's default for a new album.
 4. IF a page size is not positive or cannot be parsed, THEN THE system SHALL
    fail before processing any page, quoting the bad value.
 5. THE system SHALL treat a page size as an unordered pair of side lengths,
