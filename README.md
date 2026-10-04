@@ -8,7 +8,7 @@ images at 300 DPI, and one PDF per album.
 | `backend/` page processing pipeline (Python + OpenCV) | working on synthetic photos |
 | Album assembly, 300 DPI export, PDF | working on synthetic albums |
 | Upload API and storage server | not started |
-| Android capture app (Kotlin) | not started |
+| `android/` capture app (Kotlin) | working against a fake server and an emulator |
 
 ## Page pipeline
 
@@ -98,6 +98,77 @@ reproducible. Warnings in the report (`low_resolution`, `upsampled`,
 `aspect_mismatch`, `incomplete_coverage`, `photos_dropped`) say which pages are
 worth shooting again.
 
+## Android capture app
+
+`android/` is the phone side: it photographs each album page several times
+and uploads the shots to the server. All image work happens on the backend.
+
+- **Albums.** The hamburger menu creates albums (a name and a page size:
+  8.5 × 11 in, A4, A3 or custom), switches between them, and edits or deletes
+  them. The app reopens the album you were last shooting, at its last page.
+- **Shooting.** The camera preview fills the screen. **Volume up** (or the
+  shutter) takes a shot of the current page; **volume down** (or "Next page")
+  starts the next page, which is refused while the current page has no shots.
+  "Undo" removes a page started by mistake. Limits: 25 shots per page, 500
+  pages per album. Flash is off by default because it puts a glare spot in the
+  same place on every shot.
+- **Reviewing.** Tap a thumbnail or the page number to review shots and pages:
+  swipe through a page's shots, pinch to zoom, use the arrows to change page,
+  and delete shots or pages (later pages are renumbered).
+- **Uploading.** Every shot is kept on the phone and uploaded in the
+  background in the order things happened, on Wi-Fi only unless Settings say
+  otherwise, retrying until the server confirms it. Uploads survive the app
+  being closed and the phone rebooting.
+- **Server albums** lists what is on the server. An album that is not on this
+  phone can be deleted there, or opened to keep shooting it; opening fetches
+  only the album's page list and its last page, and other pages load as you
+  look at them.
+- **Settings**: the server URL and access token (stored encrypted), "Test
+  connection", and the upload network.
+
+### Build and install
+
+Needs JDK 17 or later (a full JDK, with `jlink`) and the Android SDK
+(platform 37).
+
+```sh
+cd android
+./gradlew assembleDebug                 # app/build/outputs/apk/debug/app-debug.apk
+./gradlew installDebug                  # onto a connected phone or emulator
+./gradlew lint testDebugUnitTest        # lint and the JVM tests
+./gradlew connectedDebugAndroidTest     # the emulator tests (needs a running emulator)
+```
+
+The JVM tests use Robolectric and an in-memory implementation of the server
+contract below (`app/src/sharedTest/.../FakeAlbumServer.kt`); the emulator
+tests drive the real UI with the same fake server running on the device,
+plus one test that takes a real CameraX shot and checks its EXIF orientation
+and focal length.
+
+### Server contract
+
+The upload server implements these calls (`.kiro/specs/android-app/design.md`
+has the bodies). Every request carries `Authorization: Bearer <token>`; album,
+page and shot ids are UUIDs the app chooses, so retried uploads are
+idempotent.
+
+| Request | Meaning |
+| --- | --- |
+| `GET /api/v1/ping` | 200 when the token is valid |
+| `GET /api/v1/albums` | every album with name, page size, page and shot counts, last change |
+| `GET /api/v1/albums/{album}` | one album's metadata and its pages in order with shot counts |
+| `PUT /api/v1/albums/{album}` | create or replace `{name, page_size, pages, created}` |
+| `DELETE /api/v1/albums/{album}` | delete the album and everything made from it |
+| `GET /api/v1/albums/{album}/pages/{page}` | one page's shots: id, sha256, bytes, taken |
+| `DELETE /api/v1/albums/{album}/pages/{page}` | delete a page and its shots |
+| `PUT /api/v1/albums/{album}/pages/{page}/shots/{shot}` | store a JPEG; `X-Content-SHA256` header; 201 new, 200 same, 400 bad hash, 409 different hash, 422 over a limit |
+| `GET /api/v1/albums/{album}/pages/{page}/shots/{shot}` | the JPEG as uploaded with `X-Content-SHA256`; `?size=thumb` for a preview of at most 320 px |
+| `DELETE /api/v1/albums/{album}/pages/{page}/shots/{shot}` | delete a shot |
+
+The app answers 401 and 403 by pausing uploads until Settings change, retries
+5xx and network errors with exponential backoff, retries a 400 on a shot once,
+and drops 409, 413 and 422 (keeping the shot on the phone).
+
 ## Known limits
 
 - The page size cannot be measured from the photos; a wrong size prints the
@@ -109,3 +180,7 @@ worth shooting again.
 - Glare can only be removed where at least one shot sees that spot without it,
   so for oversized pages each region needs two shots from different angles.
 - Tested only on synthetic photos so far.
+- The Android app has only been tested against a fake server and an emulator
+  camera; the real upload server does not exist yet.
+- Android ignores the capture screen's portrait lock on large screens
+  (tablets, foldables unfolded) from Android 16 on.

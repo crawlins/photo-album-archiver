@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  An open album with a photo on each page.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path android:fillColor="#FFF5F0E6" android:pathData="M28,34h25v40h-25z" />
+    <path android:fillColor="#FFF5F0E6" android:pathData="M55,34h25v40h-25z" />
+    <path android:fillColor="#FF8D6E63" android:pathData="M32,40h17v13h-17z" />
+    <path android:fillColor="#FF8D6E63" android:pathData="M59,52h17v13h-17z" />
+</vector>
