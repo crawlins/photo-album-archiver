@@ -27,6 +27,8 @@ class FuseParams:
     feather_frac: float = 0.04  # feather width as a fraction of the frame's long side
     sharpness: float = 2.0  # weights ** sharpness: higher picks one shot, lower averages
     halo_px: int = 5  # widen each glare spot by this many (low-res) pixels
+    glare_floor: float = 0.02  # excess below this is noise or shading, not glare
+    smooth_frac: float = 0.008  # blur of the weight maps, fraction of the long side
 
 
 @dataclass
@@ -154,6 +156,26 @@ def _photometric_reference(imgs: list[np.ndarray], masks: list[np.ndarray]) -> i
     return int(ok[np.argsort(bright)[len(ok) // 2]])
 
 
+def _smooth_weights(weights: list[np.ndarray], masks: list[np.ndarray], sigma: float) -> list[np.ndarray]:
+    """Blur each shot's share of the total weight, so shots hand over gradually.
+
+    Picking the darker shot pixel by pixel switches between shots wherever
+    they differ by a little noise or shading, which leaves a blocky patchwork
+    of slightly different tones. Blurring the shares (not the raw weights,
+    whose scale varies by orders of magnitude) turns every switch into a
+    ramp. Each shot's blur is normalised by its own coverage so it does not
+    fade towards the edge of the photo.
+    """
+    total = np.maximum(np.sum(weights, axis=0), 1e-30)
+    out = []
+    for w, m in zip(weights, masks):
+        mf = m.astype(np.float32)
+        share = cv2.GaussianBlur(w / total * mf, (0, 0), sigma)
+        cover = cv2.GaussianBlur(mf, (0, 0), sigma)
+        out.append(np.where(m, share / np.maximum(cover, 1e-6) + 1e-8, 0).astype(np.float32))
+    return out
+
+
 def fuse(
     warped: list[np.ndarray],
     masks: list[np.ndarray],
@@ -184,18 +206,24 @@ def fuse(
 
     sh, sw = small_m[0].shape
     feather_px = max(2.0, p.feather_frac * max(sh, sw))
-    halo = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * p.halo_px + 1, 2 * p.halo_px + 1))
+    sigma = p.smooth_frac * max(sh, sw)
+    # The halo also covers the reach of the blur below, so that smoothing a
+    # weight map does not let a glare spot back in at its rim.
+    r = p.halo_px + int(np.ceil(2 * sigma))
+    halo = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
     weights_small, glare_fraction = [], []
     for i in range(n):
         m = small_m[i]
         excess = np.where(m, lum[i] - np.where(np.isfinite(lum_min), lum_min, 0), 0).astype(np.float32)
         excess = cv2.dilate(np.maximum(excess, 0), halo)
-        glare_w = np.exp(-excess / p.glare_tau)
+        glare_w = np.exp(-np.maximum(excess - p.glare_floor, 0) / p.glare_tau)
         dist = cv2.distanceTransform(np.pad(m, 1).astype(np.uint8), cv2.DIST_L2, 5)[1:-1, 1:-1]
         feather = np.clip(dist / feather_px, 1e-3, 1.0)
         w = np.where(m, (feather * glare_w) ** p.sharpness + 1e-8, 0).astype(np.float32)
         weights_small.append(w)
         glare_fraction.append(float((excess[m] > p.glare_flag).mean()) if m.any() else 0.0)
+    if sigma > 0.5:
+        weights_small = _smooth_weights(weights_small, small_m, sigma)
 
     acc = np.zeros((H, W, 3), np.float32)
     wsum = np.zeros((H, W), np.float32)

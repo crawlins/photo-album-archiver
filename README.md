@@ -35,7 +35,9 @@ the whole page (to get rid of glare) or each show part of an oversized page
    (one resampling step), at roughly the resolution the photos captured.
 5. **Fuse.** Tone curves match every shot's exposure and colour to one of
    them. Where shots disagree, the darker one is favoured, because glare only
-   ever adds light; edges of partial shots are feathered so seams blend.
+   ever adds light. The weights hand over gradually between shots instead of
+   switching per pixel, and edges of partial shots are feathered, so seams
+   blend.
 
 The report (JSON) gives which photos were used or dropped, how much of the page
 was covered, the glare found in each shot and the colour correction applied.
