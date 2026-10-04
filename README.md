@@ -23,9 +23,11 @@ the whole page (to get rid of glare) or each show part of an oversized page
    from colour contrast with the background, fitted to a quadrilateral either
    by convex hull or by intersecting the four longest straight sides (which
    survives glare crossing the page edge). Each photo is also searched on its
-   own. When more than one page is in view, for example two pages lying side
-   by side, the page that the photos show whole most consistently wins, and
-   pages cut off by the edge of the frame are discounted.
+   own. Pages of an open album touch with no background between them, so
+   each outline is also cut along straight lines running right across it
+   (the join between pages, the binding, a sleeve's edge). When more than one
+   page is in view the page that the photos show whole most consistently
+   wins, and pages cut off by the edge of the frame are discounted.
 3. **True proportions** from the perspective geometry of the corners
    (Zhang & He), using the phone's focal length (26 mm equivalent by default,
    or the real one from EXIF via `--focal-35mm`).
@@ -46,6 +48,7 @@ cd backend
 python3 -m pip install -e '.[test]'
 albumproc page shot1.jpg shot2.jpg shot3.jpg -o page.png --report page.json --debug debug/
 albumproc synth samples/ --kind glare -n 4      # synthetic test photos (glare, stitch or pair)
+albumproc synth samples/ --kind pair --gap 0    # pages touching, as in an open album
 python3 -m pytest
 ```
 

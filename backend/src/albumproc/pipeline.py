@@ -175,9 +175,11 @@ def _choose_page(pool: list[tuple[PageQuad, float]], shapes: list[tuple[int, int
     for cand, touch in pool:
         q = cand.corners.astype(np.float32)
         area = cv2.contourArea(q)
-        if area <= 0:
+        # A quad mapped from another photo can fold over under strong
+        # perspective, and the overlap below is only defined for convex ones.
+        if area <= 0 or not cv2.isContourConvex(q.reshape(-1, 1, 2)):
             continue
-        visible = [cv2.intersectConvexConvex(f, q)[0] / area for f in frames]
+        visible = [min(1.0, cv2.intersectConvexConvex(f, q)[0] / area) for f in frames]
         score = cand.score * (1 - touch) ** 2 * float(np.mean(visible)) ** 3
         if score > best_score:
             best, best_score = cand, score

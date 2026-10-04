@@ -62,3 +62,24 @@ def test_single_close_up_with_neighbour_partly_in_view():
     s = score(res.image, case.page)
     assert s.corner_err < 1.0
     assert s.aspect_err < 0.02
+
+
+@pytest.mark.parametrize(
+    "seed,n,layout",
+    [
+        (20, 4, {}),  # close-ups plus a wide shot of both pages
+        (25, 3, {}),
+        (21, 1, {}),  # a single close-up
+        (31, 2, {"sides": 2, "wide": False}),  # neighbours on both sides, close-ups only
+        (42, 2, {"sides": 2, "wide": False}),
+    ],
+)
+def test_touching_pages_keeps_the_photographed_page(seed, n, layout):
+    # Pages of an open album touch with no table between them, so colour and
+    # outline alone merge them into one; only the join line separates them.
+    case = make_case(seed, "pair", n, gap=0, **layout)
+    res = process_page(case.images)
+    s = score(res.image, case.page)
+    assert res.report.dropped == []
+    assert s.corner_err < 1.0
+    assert s.aspect_err < 0.02

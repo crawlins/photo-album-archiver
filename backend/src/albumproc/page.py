@@ -13,7 +13,7 @@ DETECT_MAX_SIDE = 1000
 @dataclass
 class PageQuad:
     corners: np.ndarray  # (4, 2) float32: TL, TR, BR, BL in the input image's pixels
-    method: str  # "edges", "color" or "fallback"
+    method: str  # "edges", "color", "lines" or "fallback"
     score: float
 
 
@@ -134,6 +134,113 @@ def _edge_support(q: np.ndarray, edges: np.ndarray) -> float:
     return hits / total if total else 0.0
 
 
+def _dividers(q: np.ndarray, edges: np.ndarray, min_support: float = 0.75, max_gap: float = 0.2, end_support: float = 0.8) -> list[np.ndarray]:
+    """Split ``q`` along straight edges that cross it from side to opposite side.
+
+    Pages in an open album touch with no background between them, so they
+    come out as one outline. What separates them is a line running the full
+    height (or width) of that outline: the join between page edges, the
+    binding, the crimped edge of a sleeve, a stack of page edges. Lines inside
+    a page, such as print borders, stop short of both sides at the page
+    margins, so a divider must be present near both of its ends; a gap in the
+    middle is tolerated, since glare can wash out a stretch of it. Returns the
+    pieces on both sides of every divider found.
+    """
+    h, w = edges.shape
+    s = np.linspace(0.02, 0.98, 100)
+    pieces = []
+    # Lines from the top side to the bottom one, then from the left to the right.
+    for vertical, (a0, a1, b0, b1) in ((True, q[[0, 1, 3, 2]]), (False, q[[0, 3, 1, 2]])):
+        # End points every ~2 px, so a slanted line can still hit a thin edge.
+        side = max(np.linalg.norm(a1 - a0), np.linalg.norm(b1 - b0))
+        ts = np.linspace(0.1, 0.9, max(81, int(0.8 * side / 2)))
+        ii, jj = np.meshgrid(np.arange(len(ts)), np.arange(len(ts)), indexing="ij")
+        near = np.abs(ts[ii] - ts[jj]) <= 0.12  # roughly parallel to the sides it runs between
+        ii, jj = ii[near], jj[near]
+        A = a0 + ts[:, None] * (a1 - a0)
+        B = b0 + ts[:, None] * (b1 - b0)
+
+        def on_edge(i, j, s):
+            xy = np.round(A[i][:, None] + s[None, :, None] * (B[j] - A[i])[:, None]).astype(int)
+            inside = (xy[..., 0] >= 0) & (xy[..., 1] >= 0) & (xy[..., 0] < w) & (xy[..., 1] < h)
+            on = np.zeros(inside.shape, bool)
+            on[inside] = edges[xy[..., 1][inside], xy[..., 0][inside]] > 0
+            return on
+
+        # Screen with every fourth sample first; most lines cross bare paper.
+        keep = on_edge(ii, jj, s[::4]).mean(axis=1) >= min_support - 0.15
+        ii, jj = ii[keep], jj[keep]
+        on = on_edge(ii, jj, s)
+        run = np.zeros(len(on))
+        longest = np.zeros(len(on))
+        for k in range(on.shape[1]):
+            run = (run + 1) * ~on[:, k]
+            longest = np.maximum(longest, run)
+        support = on.mean(axis=1)
+        end = len(s) // 10
+        ends = np.minimum(on[:, :end].mean(axis=1), on[:, -end:].mean(axis=1))
+        ok = np.flatnonzero((support >= min_support) & (longest <= max_gap * len(s)) & (ends >= end_support))
+        taken: list[float] = []
+        for k in ok[np.argsort(-support[ok])]:
+            mid = (ts[ii[k]] + ts[jj[k]]) / 2
+            if any(abs(mid - t) < 0.08 for t in taken):
+                continue
+            taken.append(mid)
+            a, b = A[ii[k]], B[jj[k]]
+            if vertical:  # left and right pieces
+                pieces += [np.array([q[0], a, b, q[3]]), np.array([a, q[1], q[2], b])]
+            else:  # top and bottom pieces
+                pieces += [np.array([q[0], q[1], b, a]), np.array([a, b, q[2], q[3]])]
+            if len(taken) == 3:
+                break
+    return [p.astype(np.float32) for p in pieces]
+
+
+def _prepare(img: np.ndarray, valid: np.ndarray | None):
+    """Downscale for detection: (scale, valid mask, Lab image, edges)."""
+    H, W = img.shape[:2]
+    if valid is None:
+        valid = np.ones((H, W), bool)
+    f = min(1.0, DETECT_MAX_SIDE / max(H, W))
+    small = cv2.resize(img, (round(W * f), round(H * f)), interpolation=cv2.INTER_AREA) if f < 1 else img.copy()
+    vmask = cv2.resize(valid.astype(np.uint8), (small.shape[1], small.shape[0]), interpolation=cv2.INTER_NEAREST)
+    inner = cv2.erode(vmask, np.ones((9, 9), np.uint8), borderType=cv2.BORDER_CONSTANT, borderValue=0)
+    lab = cv2.cvtColor(cv2.GaussianBlur(small, (5, 5), 0), cv2.COLOR_BGR2LAB)
+    edges = np.zeros(vmask.shape, np.uint8)
+    for ch in cv2.split(lab):
+        edges |= cv2.Canny(ch, 30, 90)
+    edges &= inner * 255
+    return f, vmask, lab, edges
+
+
+def _share(q: np.ndarray, mask: np.ndarray | None) -> float:
+    """Share of the quad's interior where ``mask`` is set (0 without a mask).
+
+    Used with a background mask: an outline that takes in a strip of table
+    or cloth beside the page, e.g. because wood grain lines up with a page
+    edge, is not the page.
+    """
+    if mask is None:
+        return 0.0
+    inside = np.zeros(mask.shape, np.uint8)
+    cv2.fillConvexPoly(inside, np.round(q).astype(np.int32), 1)
+    n = int(inside.sum())
+    return float(mask[inside > 0].sum()) / n if n else 0.0
+
+
+def _pieces(q: np.ndarray, support_edges: np.ndarray, levels: int) -> list[np.ndarray]:
+    """Pieces of ``q`` cut along dividers, and pieces of those, ``levels`` deep."""
+    out, level = [], _dividers(q, support_edges)
+    for _ in range(levels):
+        next_level = []
+        for piece in level:
+            if _interior_angles_ok(piece):
+                out.append(piece)
+                next_level += _dividers(piece, support_edges)
+        level = next_level
+    return out
+
+
 def detect_page(img: np.ndarray, valid: np.ndarray | None = None) -> PageQuad:
     """The best-scoring page candidate; see :func:`detect_pages`."""
     return detect_pages(img, valid)[0]
@@ -144,25 +251,15 @@ def detect_pages(img: np.ndarray, valid: np.ndarray | None = None) -> list[PageQ
 
     ``valid`` marks pixels that hold real image content (a stitched mosaic has
     empty areas around it). Two candidate generators are tried, edges and
-    colour contrast against the surrounding background. Several can come back
-    when more than one page is in view. If none is found, the whole valid area
+    colour contrast against the surrounding background, and each outline is
+    also cut along straight lines that cross it (see :func:`_dividers`), which
+    separates pages that touch. Several can come back when more than one page
+    is in view. If none is found, the whole valid area
     is returned, which is right when the page fills the frame.
     """
-    H, W = img.shape[:2]
-    if valid is None:
-        valid = np.ones((H, W), bool)
-    f = min(1.0, DETECT_MAX_SIDE / max(H, W))
-    small = cv2.resize(img, (round(W * f), round(H * f)), interpolation=cv2.INTER_AREA) if f < 1 else img.copy()
-    vmask = cv2.resize(valid.astype(np.uint8), (small.shape[1], small.shape[0]), interpolation=cv2.INTER_NEAREST)
+    f, vmask, lab, edges = _prepare(img, valid)
     h, w = vmask.shape
     valid_area = float(vmask.sum())
-    inner = cv2.erode(vmask, np.ones((9, 9), np.uint8), borderType=cv2.BORDER_CONSTANT, borderValue=0)
-
-    lab = cv2.cvtColor(cv2.GaussianBlur(small, (5, 5), 0), cv2.COLOR_BGR2LAB)
-    edges = np.zeros((h, w), np.uint8)
-    for ch in cv2.split(lab):
-        edges |= cv2.Canny(ch, 30, 90)
-    edges &= inner * 255
     support_edges = cv2.dilate(edges, np.ones((5, 5), np.uint8))
 
     contours = []
@@ -173,20 +270,33 @@ def detect_pages(img: np.ndarray, valid: np.ndarray | None = None) -> list[PageQ
 
     # B: whatever differs in colour from the background seen at the frame rim.
     ring = (vmask > 0) & (cv2.erode(vmask, np.ones((25, 25), np.uint8), borderType=cv2.BORDER_CONSTANT, borderValue=0) == 0)
+    background = None  # pixels that look like the background, when it is known
     if ring.sum() > 100:
         labf = lab.astype(np.float32)
         bg = np.median(labf[ring], axis=0)
         dist = np.linalg.norm(labf - bg, axis=2)
         # Threshold relative to how much the background itself varies (wood
         # grain, cloth texture), not Otsu: colourful prints would dominate that.
-        thr = max(12.0, 3.0 * float(np.percentile(dist[ring], 75)))
+        # Pages running off the frame put page colours in the rim too, so the
+        # spread is taken from the rim pixels near the background colour.
+        rd = dist[ring]
+        rd = rd[rd <= 2 * np.median(rd) + 1e-3]
+        thr = max(12.0, 3.0 * float(np.percentile(rd, 75)))
         fg = ((dist > thr) & (vmask > 0)).astype(np.uint8)
+        # Only trust that when the rim and the middle differ, i.e. the page
+        # does not fill the frame.
+        middle = np.zeros((h, w), bool)
+        middle[h // 3 : 2 * h // 3, w // 3 : 2 * w // 3] = True
+        middle &= vmask > 0
+        if middle.any() and np.linalg.norm(np.median(labf[middle], axis=0) - bg) > thr:
+            background = (dist <= thr) & (vmask > 0)
         fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
         fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))  # small: keep gaps between pages
         found, _ = cv2.findContours(fg, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         contours += [("color", c) for c in found]
 
     found_quads: list[PageQuad] = []
+    split: list[np.ndarray] = []  # outlines already cut into pieces
     for method, cnt in contours:
         carea = cv2.contourArea(cnt)
         if carea < 0.1 * valid_area:
@@ -202,8 +312,19 @@ def detect_pages(img: np.ndarray, valid: np.ndarray | None = None) -> list[PageQ
             if fill < 0.75:
                 continue
             support = _edge_support(q, support_edges)
-            score = area_frac * fill * (0.3 + 0.7 * support)
+            score = area_frac * fill * (0.3 + 0.7 * support) * (1 - _share(q, background)) ** 2
             found_quads.append(PageQuad((q / f).astype(np.float32), method, float(score)))
+            # Pieces of the outline, twice over for a page with neighbours on
+            # both sides. The two quad fits often agree, so skip repeats.
+            if any(np.abs(q - o).max() < 3 for o in split):
+                continue
+            split.append(q)
+            for piece in _pieces(q, support_edges, 2):
+                parea = cv2.contourArea(piece) / valid_area
+                if parea < 0.1:
+                    continue
+                pscore = parea * fill * (0.3 + 0.7 * _edge_support(piece, support_edges)) * (1 - _share(piece, background)) ** 2
+                found_quads.append(PageQuad((piece / f).astype(np.float32), "lines", float(pscore)))
 
     if not found_quads:
         pts = cv2.findNonZero(vmask)

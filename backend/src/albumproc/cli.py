@@ -35,7 +35,7 @@ def _cmd_page(a) -> int:
 def _cmd_synth(a) -> int:
     from .synth import make_case
 
-    case = make_case(a.seed, a.kind, a.n)
+    case = make_case(a.seed, a.kind, a.n, a.gap)
     a.outdir.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(a.outdir / "truth.png"), case.page)
     for i, img in enumerate(case.images):
@@ -62,6 +62,7 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--kind", choices=["glare", "stitch", "pair"], default="glare")
     s.add_argument("--seed", type=int, default=1)
     s.add_argument("-n", type=int, default=4)
+    s.add_argument("--gap", type=float, default=0.03, help="pair: table between the pages, fraction of page width (0 = touching)")
     s.set_defaults(func=_cmd_synth)
 
     a = ap.parse_args(argv)
