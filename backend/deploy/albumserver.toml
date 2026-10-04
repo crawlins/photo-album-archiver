@@ -1,0 +1,33 @@
+# albumserver settings. Every setting can also be set with an environment
+# variable: ALBUMSERVER_ followed by its name in capitals, which wins over
+# this file. An unknown or invalid setting stops the server, naming it.
+
+# Everything the server stores: its index, photos, previews and outputs.
+# Back this folder up to back up the server.
+data_dir = "/var/lib/albumserver"
+
+# Loopback by default; put Tailscale or a TLS proxy in front (see the README).
+host = "127.0.0.1"
+port = 8080
+
+# Serve HTTPS directly with these, instead of using a proxy.
+# tls_cert = "/etc/albumserver/cert.pem"
+# tls_key = "/etc/albumserver/key.pem"
+
+# Largest request body accepted, in MB.
+max_body_mb = 50
+
+# A page is processed once it has had no new or deleted shot for this long,
+# or at once when the app moves on to a later page.
+idle_period_s = 30
+
+# Page runs at a time. Each can use 1 to 2 GB of memory.
+workers = 1
+
+# Stop a page's run when its shots change during it, instead of letting it
+# finish and running the page again.
+cancel_runs = false
+
+# The same limits as the app.
+max_pages = 500
+max_shots = 25

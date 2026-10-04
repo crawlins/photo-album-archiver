@@ -7,7 +7,7 @@ images at 300 DPI, and one PDF per album.
 | --- | --- |
 | `backend/` page processing pipeline (Python + OpenCV) | working on synthetic photos |
 | Album assembly, 300 DPI export, PDF | working on synthetic albums |
-| Upload API and storage server | not started |
+| `albumserver` upload API, storage and processing server | working; tested against the app's contract |
 | `android/` capture app (Kotlin) | working against a fake server and an emulator |
 
 ## Page pipeline
@@ -168,6 +168,83 @@ idempotent.
 The app answers 401 and 403 by pausing uploads until Settings change, retries
 5xx and network errors with exponential backoff, retries a 400 on a shot once,
 and drops 409, 413 and 422 (keeping the shot on the phone).
+
+## Server
+
+`albumserver` is the server the capture app uploads to. It stores albums,
+pages and shots in one data folder, serves them back to the app, and runs the
+album step on each page as soon as it has been shot, so that every album's
+print images and PDF stay current while you work through it.
+
+```sh
+cd backend
+python3 -m pip install -e .
+albumserver token create pixel-8        # prints the phone's token, once
+albumserver serve                       # http://127.0.0.1:8080, data in ~/.local/share/albumserver
+```
+
+Enter the server's URL and the token in the app's settings. Each phone gets
+its own token; `albumserver token list` shows them (never the tokens) with
+when each was last used, and `albumserver token revoke pixel-8` cuts one off.
+
+Settings come from a TOML file (`--config`, see
+[`deploy/albumserver.toml`](backend/deploy/albumserver.toml)) and from
+`ALBUMSERVER_<NAME>` environment variables, which win. An unknown or invalid
+setting stops the server, naming it. The main ones: `data_dir`, `host`
+(`127.0.0.1`), `port` (8080), `tls_cert`/`tls_key`, `idle_period_s` (30),
+`workers` (1 page run at a time; each can use 1 to 2 GB), `cancel_runs`
+(false).
+
+**Limits.** A page holds at most 25 shots and an album at most 500 pages, the
+same as the app. A shot beyond either gets 422, as does album metadata
+listing more than 500 pages; the checks are made in the same database
+transaction as the change, so concurrent uploads cannot exceed them.
+
+**Processing.** A page is processed when the app moves on to a later page, or
+after 30 seconds without a new or deleted shot. The page runs through the
+album step on its own, in a separate process; once no page of the album is
+waiting, the album's PDF is rebuilt from every page's latest print image.
+`GET /api/v1/albums/{id}/status` shows each page's state, warnings and
+errors; `/pdf` and `/pages/{pageId}/print` download the results. A page whose
+shots change mid-run is run again afterwards (with `cancel_runs = true` the
+run is stopped instead).
+
+**Data folder.** `index.sqlite` (SQLite, WAL) plus
+`albums/<albumId>/photos/<pageId>/<shotId>.jpg`, previews, outputs and the
+album's `album.pdf` and `report.json`. Back up the folder to back up the
+server. Every file is written under a temporary name and renamed into place
+before it is recorded, and removed from the index before it is deleted, so
+after a crash startup cleanup only has to delete files the index does not
+know. `albumserver check` reports missing photos, unindexed files and photos
+whose hash no longer matches, without changing anything.
+
+### Running it as a service
+
+[`deploy/albumserver.service`](backend/deploy/albumserver.service) runs the
+server as an unprivileged `albumserver` user with its data in
+`/var/lib/albumserver`; the comment at its top has the install steps. It
+logs one line per request and per page run to the journal; tokens and
+`Authorization` headers are never logged.
+
+### TLS
+
+The token is a password: never send it over plain HTTP outside your own
+machine. The server listens on loopback by default and warns at startup when
+it listens on another address without TLS. Either:
+
+- **Tailscale** (recommended): the phone and server talk over the tailnet and
+  nothing is exposed to the internet. `tailscale serve --bg --https=443
+  http://127.0.0.1:8080`, then use `https://<machine>.<tailnet>.ts.net` in the
+  app.
+- **Caddy** with an automatic certificate, for access without Tailscale:
+
+  ```
+  albums.example.com {
+      reverse_proxy 127.0.0.1:8080
+  }
+  ```
+
+- Or set `tls_cert` and `tls_key` to serve HTTPS directly.
 
 ## Known limits
 
