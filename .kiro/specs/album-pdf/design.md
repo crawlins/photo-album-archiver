@@ -35,7 +35,9 @@ A processed page has the right shape but no scale: the photos contain no ruler,
 and the phone's distance to the page is unknown. Album pages within one album
 are almost always the same size, so the size is stated once (`--page-size
 10x12in` or `"page_size"` in `album.json`) with per-page overrides for covers
-or fold-outs. Estimating size from EXIF focal length and a guessed distance was
+or fold-outs. The capture app asks for the size when an album is created,
+defaulting to 8.5 x 11 in, and writes it to `album.json`; the backend uses the
+same default when nothing gives a size. Estimating size from EXIF focal length and a guessed distance was
 rejected: it would be off by tens of percent, and printing at the wrong size is
 worse than asking.
 
@@ -131,7 +133,7 @@ album loop catches `Exception` per page, records the message and moves on;
 white page of its size with its name and "missing" drawn in, so a printed
 album keeps facing pages paired. The exit status is 0 when every page
 succeeded, 3 when some failed, 2 for usage or input errors detected before
-processing (no pages, missing or bad page size).
+processing (no pages, bad page size).
 
 ### Memory and parallelism
 
@@ -253,7 +255,7 @@ class AlbumSpec:
 class AlbumOptions:
     page: PageOptions = field(default_factory=PageOptions)
     print: PrintOptions = field(default_factory=PrintOptions)
-    page_size: PageSize | None = None   # album-wide default; the manifest's wins
+    page_size: PageSize | None = None   # album-wide default; the manifest's wins; letter when None
     coverage_threshold: float = 0.99
     strict: bool = False
     placeholder: bool = False
@@ -268,8 +270,8 @@ def process_album(folder: Path, out: Path, opt: AlbumOptions, progress: Callable
 `discover_album` reads `album.json` when present, else lists subfolders.
 Natural sort splits names into digit and non-digit runs and compares digits
 numerically. The slug is the folder name with anything outside
-`[A-Za-z0-9._-]` replaced by `-`. Pages without a size are collected and
-reported together before any processing starts (Requirement 2.3).
+`[A-Za-z0-9._-]` replaced by `-`. Pages without a size get 8.5 x 11 in
+(Requirement 2.3).
 
 `process_album` builds the spec, validates sizes, loads the previous
 `report.json` if any, then for each page: compute keys, reuse or run
@@ -381,7 +383,8 @@ become string keys in JSON, as `albumproc page --report` already does.
 | Situation | Behaviour | Exit |
 | --- | --- | --- |
 | No pages found | error naming the folder, no outputs | 2 |
-| Page size missing or unparsable | error listing pages or quoting the value, no outputs | 2 |
+| Page size unparsable | error quoting the value, no outputs | 2 |
+| No page size given anywhere | 8.5 x 11 in (letter) | 0 |
 | Manifest invalid (bad JSON, unknown key, bad rotate/fit) | error with the key path | 2 |
 | Manifest page with no folder or photos | page failed, others continue | 3 |
 | `process_page` raises | page failed, others continue (`--strict`: stop, no PDF) | 3 (`--strict`: 1) |
