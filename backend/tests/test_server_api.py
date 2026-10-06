@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import errno
 import io
+import os
 import threading
 
 import pytest
@@ -345,6 +347,24 @@ def test_25_shots_allowed_26th_refused_with_422(api, client):
     # a repeat of a stored shot is still fine at the limit
     first = api.get(f"/albums/{a}/pages/{p}").json()["shots"][0]
     assert api.put_shot(a, p, first["id"], make_jpeg(0), digest=first["sha256"]).status_code == 200
+
+
+@pytest.mark.parametrize("err", [errno.ENOSPC, errno.EDQUOT])
+def test_full_disk_is_507_and_stores_nothing(api, client, monkeypatch, err):
+    from albumserver.files import Upload
+
+    def full(self, chunk):
+        raise OSError(err, os.strerror(err))
+
+    monkeypatch.setattr(Upload, "write", full)
+    a, p, s = new_id(), new_id(), new_id()
+    r = api.put_shot(a, p, s, make_jpeg(1))
+    assert r.status_code == 507
+    assert r.json()["error"] == "insufficient_storage"
+    assert not client.layout.photo(a, p, s).exists()
+    assert not list(client.layout.photo(a, p, s).parent.glob("*"))
+    monkeypatch.undo()
+    assert api.put_shot(a, p, s, make_jpeg(1)).status_code == 201
 
 
 def test_shot_that_would_be_the_501st_page_is_422(api):

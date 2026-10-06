@@ -238,11 +238,10 @@ class Worker:
                 outcome, old = self.store.finish_run(claim, act.output, error, print_path, warnings)
             else:
                 outcome, old = self.store.finish_run(claim, None, error)
-            if outcome == "adopted":
-                if old:
-                    self._trash.append((time.monotonic() + TRASH_DELAY_S, self.layout.album(claim.album_id) / old))
-            else:
+            if outcome != "adopted":
                 remove_tree(out)
+            if outcome in ("adopted", "failed") and old:
+                self._trash.append((time.monotonic() + TRASH_DELAY_S, self.layout.album(claim.album_id) / old))
             remove_tree(self.layout.work(claim.album_id, pid))
             codes = ", ".join(w.get("code", "?") for w in (warnings if ok else []) if isinstance(w, dict))
             what = "failed: " + error if error else "done" + (f" ({codes})" if codes else "")
