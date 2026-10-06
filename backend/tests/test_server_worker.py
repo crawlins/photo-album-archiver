@@ -119,7 +119,7 @@ def test_next_page_makes_the_previous_page_ready_at_once(api, worker, runner, cl
     assert runner.runs == []
     api.put_album(a, [p1, p2], page_size="5x4in")  # the app's "Next page"
     assert _page_state(api, a, 1) == "ready"
-    assert _page_state(api, a, 2) == "changed"
+    assert _page_state(api, a, 2) == "empty"
     worker.step()
     assert len(runner.runs) == 1
     assert runner.runs[0].photos and len(runner.runs[0].photos) == 2
@@ -207,6 +207,28 @@ def test_shot_during_a_run_sends_the_page_back_and_it_runs_again(api, worker, ru
     runner.runs[1].finish()
     worker.step()
     assert _page_state(api, a, 1) == "done"
+
+
+def test_next_page_during_a_run_makes_the_changed_page_ready_when_the_run_ends(api, worker, runner, clock):
+    p1, p2 = new_id(), new_id()
+    a = _album_with_shots(api, [p1])
+    clock.advance(30)
+    worker.step()
+    api.put_shot(a, p1, new_id(), make_jpeg(77))  # a late shot of page 1, then "Next page"
+    api.put_album(a, [p1, p2], page_size="5x4in")
+    runner.runs[0].finish()
+    worker.step()
+    assert len(runner.runs) == 2  # no idle wait
+    assert len(runner.runs[1].photos) == 3
+
+
+def test_page_with_no_shots_is_reported_empty(api, worker, runner, clock):
+    p1, p2 = new_id(), new_id()
+    a = _album_with_shots(api, [p1])
+    api.put_album(a, [p1, p2], page_size="5x4in")
+    assert _page_state(api, a, 2) == "empty"
+    api.put_shot(a, p2, new_id(), make_jpeg(3))
+    assert _page_state(api, a, 2) == "changed"
 
 
 def test_shot_deleted_during_a_run_also_sends_the_page_back(api, worker, runner, clock):
@@ -300,6 +322,31 @@ def test_crashed_run_is_failed_and_retried_on_the_next_change(api, worker, runne
     clock.advance(30)
     worker.step()
     assert len(runner.runs) == 2
+
+
+def test_crashed_run_drops_the_previous_result_and_rebuilds_the_pdf(api, worker, runner, clock):
+    p1, p2 = new_id(), new_id()
+    a = _album_with_shots(api, [p1, p2])
+    api.put_album(a, [p1, p2], page_size="5x4in")
+    clock.advance(30)
+    worker.step()
+    runner.runs[0].finish()
+    worker.step()
+    runner.runs[1].finish()
+    worker.step()
+    assert len(pikepdf.open(io.BytesIO(api.get(f"/albums/{a}/pdf").content)).pages) == 2
+
+    api.put_shot(a, p1, new_id(), make_jpeg(5))
+    clock.advance(30)
+    worker.step()
+    runner.runs[2].crash("the page run exited with code -9")
+    worker.step()
+    st = api.get(f"/albums/{a}/status").json()
+    assert st["pages"][0]["state"] == "failed" and "-9" in st["pages"][0]["error"]
+    assert st["pdf"] == "current"
+    assert len(pikepdf.open(io.BytesIO(api.get(f"/albums/{a}/pdf").content)).pages) == 1
+    assert api.get(f"/albums/{a}/pages/{p1}/print").status_code == 404
+    assert api.get(f"/albums/{a}/pages/{p2}/print").status_code == 200
 
 
 # -- the album PDF ----------------------------------------------------------------

@@ -153,8 +153,9 @@ a whole album.
    shot's EXIF orientation.
 3. THE server SHALL make each preview on first request and reuse it after
    that.
-4. THE server SHALL send an `ETag` equal to the hash for full shots and
-   previews, and SHALL answer 304 to a matching `If-None-Match`.
+4. THE server SHALL send an `ETag` equal to the hash for full shots, and the
+   hash followed by `-thumb` for previews, and SHALL answer 304 to a matching
+   `If-None-Match`.
 
 ### Requirement 7: Deleting
 
@@ -230,7 +231,8 @@ and print the results.
 1. THE server SHALL answer `GET /api/v1/albums/{albumId}/status` with whether
    the album is waiting for a page size, the state of its PDF (`none`,
    `out_of_date` or `current`) and, for every page in order, its processing
-   state (`changed`, `ready`, `processing`, `done` or `failed`), the time of
+   state (`changed`, `ready`, `processing`, `done` or `failed`, or `empty`
+   for a page with no shots), the time of
    its last run, and from that run's report its warnings, each with a code and
    message, or its error.
 2. THE server SHALL answer `GET /api/v1/albums/{albumId}/pdf` with the album's

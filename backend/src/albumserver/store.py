@@ -285,6 +285,14 @@ class Store:
                         WHERE album_id = ? AND state = 'changed' AND position < ? AND changed_at IS NOT NULL AND {_HAS_SHOTS}""",
                     (now, album_id, max(new_positions)),
                 )
+                # A page that changed while it was being processed is marked
+                # too, so that it goes straight to "ready" when its run ends
+                # instead of waiting out the idle period.
+                c.execute(
+                    f"""UPDATE page SET ready_at = ?
+                        WHERE album_id = ? AND state = 'processing' AND change_gen != run_gen AND position < ? AND {_HAS_SHOTS}""",
+                    (now, album_id, max(new_positions)),
+                )
             if a is not None and (a["name"] != name or [r["id"] for r in existing] != order):
                 c.execute("UPDATE album SET pdf_stale = 1 WHERE id = ?", (album_id,))
 
@@ -461,7 +469,7 @@ class Store:
                 "SELECT COUNT(*) FROM page WHERE album_id = ? AND position <= (SELECT position FROM page WHERE id = ?)", (p["album_id"], p["id"])
             ).fetchone()[0]
             shots = [r[0] for r in c.execute("SELECT id FROM shot WHERE page_id = ? ORDER BY taken, received, rowid", (p["id"],))]
-            c.execute("UPDATE page SET state = 'processing', run_gen = change_gen WHERE id = ?", (p["id"],))
+            c.execute("UPDATE page SET state = 'processing', run_gen = change_gen, ready_at = NULL WHERE id = ?", (p["id"],))
         return Claim(p["id"], p["album_id"], p["change_gen"], number, p["name"], p["page_size"], p["output"], shots)
 
     def run_target(self, page_id: str) -> tuple[bool, int | None]:
@@ -482,32 +490,47 @@ class Store:
 
         ``output`` is the run's output folder, or None when the run produced
         nothing usable. The outcome is ``gone`` when the page was deleted
-        meanwhile, ``discarded`` when its output is not wanted (no output, or
+        meanwhile, ``failed`` when a run of the page as it still is produced
+        nothing (its previous outputs are dropped, so neither the PDF nor
+        ``/print`` keeps showing a result the page no longer has),
+        ``discarded`` when the output is otherwise not wanted (no output, or
         the page has no shots left), else ``adopted``. Either way the page
-        goes back to ``changed`` if it changed during the run.
+        goes back to ``changed`` if it changed during the run, or to ``ready``
+        if a later page also appeared meanwhile (see ``put_album``).
         """
         now = self.now()
         with self._write() as c:
-            p = c.execute("SELECT change_gen, output FROM page WHERE id = ?", (claim.page_id,)).fetchone()
+            p = c.execute("SELECT change_gen, output, ready_at FROM page WHERE id = ?", (claim.page_id,)).fetchone()
             if p is None:
                 return "gone", output
             moved = p["change_gen"] != claim.gen
             has_shots = c.execute("SELECT 1 FROM shot WHERE page_id = ?", (claim.page_id,)).fetchone() is not None
-            state = "changed" if moved else ("failed" if error else "done")
+            if moved:
+                state = "ready" if p["ready_at"] else "changed"
+            else:
+                state = "failed" if error else "done"
             c.execute("UPDATE page SET state = ?, run_gen = NULL, last_run = ?, last_error = ? WHERE id = ?", (state, now, error, claim.page_id))
+            if has_shots:
+                c.execute("UPDATE album SET pdf_stale = 1 WHERE id = ?", (claim.album_id,))
+            if output is None and has_shots and error and not moved:
+                c.execute("UPDATE page SET output = NULL, print_path = NULL, warnings = NULL WHERE id = ?", (claim.page_id,))
+                return "failed", p["output"]
             if output is None or not has_shots:
                 return "discarded", output
             c.execute(
                 "UPDATE page SET output = ?, print_path = ?, warnings = ? WHERE id = ?",
                 (output, print_path, json.dumps(warnings or []), claim.page_id),
             )
-            c.execute("UPDATE album SET pdf_stale = 1 WHERE id = ?", (claim.album_id,))
         return "adopted", p["output"] if p["output"] != output else None
 
     def abandon_run(self, claim: Claim) -> None:
         """A run was stopped: the page waits to be run again."""
         with self._write() as c:
-            c.execute("UPDATE page SET state = 'changed', run_gen = NULL WHERE id = ? AND state = 'processing'", (claim.page_id,))
+            c.execute(
+                """UPDATE page SET state = CASE WHEN ready_at IS NULL THEN 'changed' ELSE 'ready' END, run_gen = NULL
+                   WHERE id = ? AND state = 'processing'""",
+                (claim.page_id,),
+            )
 
     def albums_to_assemble(self) -> list[str]:
         with self._read() as c:
@@ -567,7 +590,8 @@ class Store:
             pdf = "current"
         out = []
         for i, p in enumerate(pages, 1):
-            e = {"id": p["id"], "number": i, "state": p["state"], "last_run": p["last_run"], "warnings": json.loads(p["warnings"] or "[]")}
+            state = p["state"] if p["has_shots"] else "empty"
+            e = {"id": p["id"], "number": i, "state": state, "last_run": p["last_run"], "warnings": json.loads(p["warnings"] or "[]")}
             if p["state"] == "failed" and p["last_error"]:
                 e["error"] = p["last_error"]
             out.append(e)

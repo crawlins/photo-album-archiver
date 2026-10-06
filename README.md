@@ -272,6 +272,6 @@ it listens on another address without TLS. Either:
   each, on the `real-test-photos` branch; `tests/test_real.py` runs them when
   `real/` is checked out).
 - The Android app has only been tested against a fake server and an emulator
-  camera; the real upload server does not exist yet.
+  camera, not yet against a running `albumserver`.
 - Android ignores the capture screen's portrait lock on large screens
   (tablets, foldables unfolded) from Android 16 on.
