@@ -4,6 +4,10 @@ A fake album page (prints, captions, paper texture) lies on a fake table. A
 pinhole camera looks at it from varied angles, so perspective is physically
 correct, and each shot gets its own glare spots, exposure, noise and JPEG
 compression. The page image itself is kept as ground truth.
+
+Glare comes in two styles: ``spot`` (soft, flat-topped reflections of a lamp)
+and ``sleeve`` (long, thin, wavy streaks with a clipped core inside a soft
+veil, as a crinkled plastic sleeve reflects a ceiling light).
 """
 
 from __future__ import annotations
@@ -134,6 +138,36 @@ def _add_glare(rng, img, page_poly) -> tuple[np.ndarray, np.ndarray]:
     return np.clip(out * 255, 0, 255).astype(np.uint8), total > 0.15
 
 
+def _sleeve_glare(rng, img, page_poly) -> tuple[np.ndarray, np.ndarray]:
+    """Two to four long, wavy streaks: a clipped core inside a soft veil.
+
+    Returns the image as float32 in 0..255 *without* clipping, so the camera's
+    exposure is applied before the sensor clips, as in a real photo, and the
+    ground-truth glare mask.
+    """
+    h, w = img.shape[:2]
+    pw = float(np.linalg.norm(page_poly[1] - page_poly[0]))  # page width in this shot
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    total = np.zeros((h, w), np.float32)
+    for _ in range(int(rng.integers(2, 5))):
+        cx, cy = (rng.dirichlet([2, 2, 2, 2])[:, None] * page_poly).sum(axis=0)  # somewhere on the page
+        ang = rng.uniform(0, np.pi)
+        length = rng.uniform(0.4, 0.9) * pw
+        amp, wavelength, phase = rng.uniform(0.005, 0.02) * pw, rng.uniform(0.15, 0.3) * pw, rng.uniform(0, 2 * np.pi)
+        u = (xx - cx) * np.cos(ang) + (yy - cy) * np.sin(ang)
+        v = -(xx - cx) * np.sin(ang) + (yy - cy) * np.cos(ang)
+        d = np.abs(v - amp * np.sin(2 * np.pi * u / wavelength + phase))
+        along = np.exp(-((np.abs(u) / (length / 2)) ** 6))  # flat along the streak, tapering at its ends
+        core = np.exp(-((d / (0.005 * pw)) ** 4)) * rng.uniform(1.0, 1.3)  # about 1% of the page wide
+        veil = np.exp(-((d / (0.025 * pw)) ** 2)) * rng.uniform(0.35, 0.55)  # about 5% wide above 0.15
+        total = np.maximum(total, along * np.maximum(core, veil))
+    out = img.astype(np.float32) / 255.0
+    # Reflected light is white and adds on top; the camera's tone curve
+    # compresses what lies under it, so the print's contrast fades too.
+    out = out * (1 - 0.5 * np.minimum(total, 1))[..., None] + total[..., None]
+    return out * 255, total > 0.15
+
+
 def make_shots(
     rng: np.random.Generator,
     scene: np.ndarray,
@@ -142,12 +176,16 @@ def make_shots(
     fill: float,
     img_size=(2000, 1500),
     glare: bool = True,
+    glare_style: str = "spot",
 ) -> list[SynthShot]:
     """Photograph ``scene``; each target is a point in page-relative coords (0..1).
 
     ``fill`` is the fraction of the image width that the page's width spans;
-    above 1 each shot only sees part of the page.
+    above 1 each shot only sees part of the page. ``glare_style`` is ``spot``
+    or ``sleeve``.
     """
+    if glare_style not in ("spot", "sleeve"):
+        raise ValueError(glare_style)
     px, py, pw, ph = page_rect
     w, h = img_size
     f = 26 / 43.27 * np.hypot(w, h)  # 26 mm-equivalent, a typical phone main camera
@@ -167,7 +205,9 @@ def make_shots(
         page_poly = cv2.perspectiveTransform(np.float32([[px, py], [px + pw, py], [px + pw, py + ph], [px, py + ph]]).reshape(-1, 1, 2), H).reshape(4, 2)
         page_poly = np.clip(page_poly, 0, [w - 1, h - 1])
         gmask = np.zeros((h, w), bool)
-        if glare:
+        if glare and glare_style == "sleeve":
+            img, gmask = _sleeve_glare(rng, img, page_poly)
+        elif glare:
             img, gmask = _add_glare(rng, img, page_poly)
         # Exposure/white-balance drift, sensor noise, mild blur, JPEG.
         gain = rng.uniform(0.9, 1.1) * rng.uniform(0.97, 1.03, 3)
@@ -179,12 +219,53 @@ def make_shots(
     return shots
 
 
-def make_case(seed: int, kind: str = "glare", n: int = 4, gap: float = 0.03, sides: int = 1, wide: bool = True) -> SynthPage:
+def make_clean_white_page(rng: np.random.Generator, w: int = 2200, h: int = 1700) -> np.ndarray:
+    """A glare-free page of bright, unsaturated content that is not glare.
+
+    White paper, prints with wide white borders, and one print whose upper
+    part is a blown-out sky. A print cannot be whiter than its own paper, so
+    the sky is the white of the border, flat apart from the paper's grain.
+    Whites are those of diffusely lit paper, below what the camera clips.
+    """
+    grain = cv2.GaussianBlur(rng.normal(0, 1, (h, w)).astype(np.float32), (0, 0), 1.2)[..., None]
+    page = np.empty((h, w, 3), np.float32)
+    page[:] = (212, 222, 228)  # off-white album paper, BGR
+    page += grain * 3
+    mx, my = int(w * 0.06), int(h * 0.07)
+    cw, ch = (w - 3 * mx) // 2, (h - 3 * my) // 2
+    sky = int(rng.integers(0, 4))
+    white = np.array([226, 229, 230], np.float32)  # photo paper
+    for k in range(4):
+        r, c = divmod(k, 2)
+        x, y = mx + c * (cw + mx), my + r * (ch + my)
+        b = cw // 12  # wide white border
+        pw, ph = cw - 2 * b, ch - 2 * b
+        page[y : y + ch, x : x + cw] = white + grain[y : y + ch, x : x + cw] * 2
+        photo = _print_photo(rng, pw, ph).astype(np.float32)
+        if k == sky:
+            top = int(ph * 0.4)
+            ramp = np.clip((np.arange(ph) - top) / 12.0, 0, 1)[:, None, None]  # the horizon, slightly soft
+            photo = white * (1 - ramp) + photo * ramp + grain[y + b : y + b + ph, x + b : x + b + pw] * 2 * (1 - ramp)
+        page[y + b : y + b + ph, x + b : x + b + pw] = photo
+    return np.clip(page, 0, 255).astype(np.uint8)
+
+
+def make_case(
+    seed: int,
+    kind: str = "glare",
+    n: int = 4,
+    gap: float = 0.03,
+    sides: int = 1,
+    wide: bool = True,
+    glare_style: str = "spot",
+) -> SynthPage:
     """Build a test case.
 
     kind="glare": n full-page shots from different angles, each with glare.
     kind="stitch": an oversized page shot in overlapping parts (left/right,
     or a 2x2 grid when n >= 4), each with glare.
+    kind="clean_white": n full-page shots of a page of white paper, prints
+    with wide white borders and a blown-out sky, with no glare at all.
     kind="pair": pages lying flat side by side; the shots are of one of them
     (the ground truth) and a neighbouring page is partly in view, on one
     side or, with ``sides=2``, on both. With ``wide`` the last shot is wider
@@ -192,12 +273,15 @@ def make_case(seed: int, kind: str = "glare", n: int = 4, gap: float = 0.03, sid
     ``gap`` is the strip of table between pages as a fraction of the page
     width; at 0 they touch, as in an open album, and only a thin shadow marks
     the join.
+    ``glare_style`` is ``spot`` or ``sleeve`` (see ``make_shots``).
     """
     rng = np.random.default_rng(seed)
     if kind == "stitch" and n >= 4:
         page = make_page(rng, 3200, 2200)
     elif kind == "stitch":
         page = make_page(rng, 4000, 2000)  # wide, like a two-page spread
+    elif kind == "clean_white":
+        page = make_clean_white_page(rng)
     else:
         page = make_page(rng)
     ph, pw = page.shape[:2]
@@ -226,18 +310,21 @@ def make_case(seed: int, kind: str = "glare", n: int = 4, gap: float = 0.03, sid
         rect = (x_page, margin, pw, ph)
         n_close = n - 1 if wide and n >= 2 else n
         targets = [(0.5 + rng.uniform(-0.05, 0.05), 0.5 + rng.uniform(-0.05, 0.05)) for _ in range(max(1, n_close))]
-        shots = make_shots(rng, scene, rect, targets, fill=0.62)
+        shots = make_shots(rng, scene, rect, targets, fill=0.62, glare_style=glare_style)
         if wide and n >= 2:
             # A wide shot of the whole row, aimed at its middle.
             mid = (len(row) * pw + (len(row) - 1) * gap) / 2 - k_page * (pw + gap)
-            shots += make_shots(rng, scene, rect, [(mid / pw, 0.5)], fill=0.36 if len(row) == 2 else 0.25)
+            shots += make_shots(rng, scene, rect, [(mid / pw, 0.5)], fill=0.36 if len(row) == 2 else 0.25, glare_style=glare_style)
         return SynthPage(page, scene, (x_page, margin), shots)
     scene = make_table(rng, pw + 2 * margin, ph + 2 * margin)
     scene[margin : margin + ph, margin : margin + pw] = page
     rect = (margin, margin, pw, ph)
     if kind == "glare":
         targets = [(0.5 + rng.uniform(-0.04, 0.04), 0.5 + rng.uniform(-0.04, 0.04)) for _ in range(n)]
-        shots = make_shots(rng, scene, rect, targets, fill=0.72)
+        shots = make_shots(rng, scene, rect, targets, fill=0.72, glare_style=glare_style)
+    elif kind == "clean_white":
+        targets = [(0.5 + rng.uniform(-0.04, 0.04), 0.5 + rng.uniform(-0.04, 0.04)) for _ in range(n)]
+        shots = make_shots(rng, scene, rect, targets, fill=0.72, glare=False)
     elif kind == "stitch":
         if n >= 4:
             targets = [(0.3, 0.3), (0.7, 0.3), (0.3, 0.7), (0.7, 0.7)][:n]
@@ -246,7 +333,7 @@ def make_case(seed: int, kind: str = "glare", n: int = 4, gap: float = 0.03, sid
             targets = [(0.3, 0.5), (0.7, 0.5)]
             fill = 1.2
         targets = [(x + rng.uniform(-0.03, 0.03), y + rng.uniform(-0.03, 0.03)) for x, y in targets]
-        shots = make_shots(rng, scene, rect, targets, fill=fill)
+        shots = make_shots(rng, scene, rect, targets, fill=fill, glare_style=glare_style)
     else:
         raise ValueError(kind)
     return SynthPage(page, scene, (margin, margin), shots)

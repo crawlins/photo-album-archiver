@@ -2,13 +2,16 @@
 
 ``albumproc page`` processes one page, ``albumproc album`` a whole album into
 print images and a PDF, ``albumproc print`` turns one processed page into a
-print image, and ``albumproc synth`` makes test photos.
+print image, ``albumproc glare`` checks single photos for glare,
+``albumproc glare-eval`` scores a page's glare map against a hand-drawn mask,
+and ``albumproc synth`` makes test photos.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from dataclasses import asdict
@@ -17,8 +20,26 @@ from pathlib import Path
 import cv2
 
 
+def _write_atomic(path: Path, data: bytes) -> None:
+    """Write ``data`` to ``path`` through a temporary file renamed into place."""
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        tmp.write_bytes(data)
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _write_image(path: Path, img) -> None:
+    ok, buf = cv2.imencode(path.suffix or ".png", img)
+    if not ok:
+        raise OSError(f"cannot encode {path.name}")
+    _write_atomic(path, buf.tobytes())
+
+
 def _cmd_page(a) -> int:
     from .pipeline import PageOptions, process_page
+    from .regions import QualityParams
 
     images = []
     for p in a.photos:
@@ -27,22 +48,94 @@ def _cmd_page(a) -> int:
             print(f"cannot read {p}", file=sys.stderr)
             return 2
         images.append(img)
-    res = process_page(images, PageOptions(max_side=a.max_side, focal_35mm=a.focal_35mm or None), debug_dir=a.debug)
+    opt = PageOptions(
+        max_side=a.max_side,
+        focal_35mm=a.focal_35mm or None,
+        quality=QualityParams(residual_threshold=a.glare_threshold, min_region_area=a.min_region),
+    )
+    res = process_page(images, opt, debug_dir=a.debug)
     a.output.parent.mkdir(parents=True, exist_ok=True)
-    cv2.imwrite(str(a.output), res.image)
     report = res.report.to_dict()
     report["inputs"] = [str(p) for p in a.photos]
     text = json.dumps(report, indent=2)
-    if a.report:
-        a.report.write_text(text + "\n")
+    meta = a.report or a.output.with_suffix(".json")
+    try:
+        _write_image(a.output, res.image)  # the image first: metadata never describes a missing image
+        if a.masks:
+            h, w = res.image.shape[:2]
+            glare = cv2.resize(res.residual_glare, (w, h), interpolation=cv2.INTER_LINEAR)
+            _write_image(a.output.with_suffix(".glare.png"), (glare * 255 + 0.5).clip(0, 255).astype("uint8"))
+            _write_image(a.output.with_suffix(".uncovered.png"), (~res.coverage).astype("uint8") * 255)
+        meta.parent.mkdir(parents=True, exist_ok=True)
+        _write_atomic(meta, (text + "\n").encode())
+    except OSError as e:
+        print(f"cannot write {getattr(e, 'filename', None) or meta}: {e}", file=sys.stderr)
+        return 2
     print(text)
+    return 0
+
+
+def _cmd_glare(a) -> int:
+    from .glare import detect_glare
+    from .regions import QualityParams, find_regions
+
+    q = QualityParams()
+    images = []
+    for p in a.photos:
+        img = cv2.imread(str(p), cv2.IMREAD_COLOR)
+        if img is None:
+            print(f"cannot read {p}", file=sys.stderr)
+            return 2
+        images.append(img)
+    out = []
+    for p, img in zip(a.photos, images):
+        g = detect_glare(img).glare
+        h, w = img.shape[:2]
+        found = find_regions(g >= q.residual_threshold, (w, h), q.min_region_area)
+        regions = []
+        for r, m in found:
+            r.severity, r.edges = round(float(g[m].mean()), 4), None
+            regions.append(r.to_dict())
+        out.append({"photo": str(p), "glare_fraction": round(float((g >= q.residual_threshold).mean()), 4), "regions": regions})
+        if a.overlay:
+            from .pipeline import quality_overlay
+
+            a.overlay.mkdir(parents=True, exist_ok=True)
+            cv2.imwrite(str(a.overlay / f"{p.stem}.glare.jpg"), quality_overlay(img, regions, []))
+    print(json.dumps(out, indent=2))
+    return 0
+
+
+def _cmd_glare_eval(a) -> int:
+    meta = json.loads(a.metadata.read_text())
+    threshold = meta.get("detector", {}).get("quality", {}).get("residual_threshold", 0.5)
+    stem = a.metadata.name[: -len(a.metadata.suffix)] if a.metadata.suffix else a.metadata.name
+    mask_path = (a.masks_dir or a.metadata.parent) / f"{stem}.glare.png"
+    pred = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+    if pred is None:
+        print(f"cannot read {mask_path} (write it with albumproc page --masks)", file=sys.stderr)
+        return 2
+    truth = cv2.imread(str(a.truth), cv2.IMREAD_GRAYSCALE)
+    if truth is None:
+        print(f"cannot read {a.truth}", file=sys.stderr)
+        return 2
+    if truth.shape != pred.shape:
+        print(f"resizing {a.truth.name} from {truth.shape[1]}x{truth.shape[0]} to {pred.shape[1]}x{pred.shape[0]}", file=sys.stderr)
+        truth = cv2.resize(truth, (pred.shape[1], pred.shape[0]), interpolation=cv2.INTER_NEAREST)
+    p, t = pred >= threshold * 255, truth > 127
+    scores = {
+        "recall": round(float((p & t).sum() / max(t.sum(), 1)), 4),
+        "false_positive_share": round(float((p & ~t).sum() / max((~t).sum(), 1)), 4),
+        "iou": round(float((p & t).sum() / max((p | t).sum(), 1)), 4),
+    }
+    print(json.dumps(scores, indent=2))
     return 0
 
 
 def _cmd_synth(a) -> int:
     from .synth import make_case
 
-    case = make_case(a.seed, a.kind, a.n, a.gap)
+    case = make_case(a.seed, a.kind, a.n, a.gap, glare_style=a.glare_style)
     a.outdir.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(a.outdir / "truth.png"), case.page)
     for i, img in enumerate(case.images):
@@ -149,8 +242,11 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("page", help="merge several photos of one page into a clean page image")
     p.add_argument("photos", nargs="+", type=Path)
     p.add_argument("-o", "--output", type=Path, required=True)
-    p.add_argument("--report", type=Path, help="also write the JSON report here")
+    p.add_argument("--report", type=Path, help="write the page metadata (JSON) here instead of next to the image")
+    p.add_argument("--masks", action="store_true", help="also write PAGE.glare.png and PAGE.uncovered.png")
     p.add_argument("--debug", type=Path, help="write intermediate images to this folder")
+    p.add_argument("--glare-threshold", type=float, default=0.5, help="residual glare counted as glare (0-1)")
+    p.add_argument("--min-region", type=float, default=0.0005, help="smallest region reported, as a fraction of the page")
     p.add_argument("--max-side", type=int, default=8000, help="cap on output long side (px)")
     p.add_argument("--focal-35mm", type=float, default=26.0, help="35 mm-equivalent focal length of the camera (0 = estimate)")
     p.set_defaults(func=_cmd_page)
@@ -185,12 +281,24 @@ def main(argv: list[str] | None = None) -> int:
     pr.add_argument("--rotate", type=int, choices=[0, 90, 180, 270], default=0, help="clockwise, applied first")
     pr.set_defaults(func=_cmd_print)
 
+    g = sub.add_parser("glare", help="check single photos for glare")
+    g.add_argument("photos", nargs="+", type=Path)
+    g.add_argument("--overlay", type=Path, help="write each photo with its glare regions outlined to this folder")
+    g.set_defaults(func=_cmd_glare)
+
+    ge = sub.add_parser("glare-eval", help="score a page's glare map against a hand-drawn mask")
+    ge.add_argument("metadata", type=Path, help="the page metadata (PAGE.json)")
+    ge.add_argument("--truth", type=Path, required=True, help="hand-drawn mask, white where there is glare")
+    ge.add_argument("--masks-dir", type=Path, help="where PAGE.glare.png is (default: next to the metadata)")
+    ge.set_defaults(func=_cmd_glare_eval)
+
     s = sub.add_parser("synth", help="generate synthetic test photos of a page")
     s.add_argument("outdir", type=Path)
-    s.add_argument("--kind", choices=["glare", "stitch", "pair"], default="glare")
+    s.add_argument("--kind", choices=["glare", "stitch", "pair", "clean_white"], default="glare")
     s.add_argument("--seed", type=int, default=1)
     s.add_argument("-n", type=int, default=4)
     s.add_argument("--gap", type=float, default=0.03, help="pair: table between the pages, fraction of page width (0 = touching)")
+    s.add_argument("--glare-style", choices=["spot", "sleeve"], default="spot")
     s.set_defaults(func=_cmd_synth)
 
     a = ap.parse_args(argv)

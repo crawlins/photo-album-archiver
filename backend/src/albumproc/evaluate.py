@@ -57,3 +57,26 @@ def score(out: np.ndarray, truth: np.ndarray) -> Score:
     la, lb = a.mean(axis=2), b.mean(axis=2)
     glare_px = float(((la - lb) > 35).mean())
     return Score(round(mae, 2), round(glare_px, 4), round(corner_err, 3), round(aspect_err, 4))
+
+
+def residual_truth(out: np.ndarray, truth: np.ndarray, levels: float = 20) -> np.ndarray:
+    """Pixels of ``out`` at least ``levels`` brighter than the ground truth.
+
+    The truth is aligned to the output as ``score`` does it and its colours
+    matched by a robust per-channel gain, so what remains brighter is glare
+    left in the composed page. Returns a bool mask the size of ``out``.
+    """
+    oh, ow = out.shape[:2]
+    h, w = truth.shape[:2]
+    res, corners = _align(out, truth)
+    ideal = np.float32([[0, 0], [w, 0], [w, h], [0, h]])
+    # Truth warped into the (resized) output's frame.
+    Hm = cv2.getPerspectiveTransform(ideal, corners.astype(np.float32))
+    tw = cv2.warpPerspective(truth, Hm, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+    a = cv2.GaussianBlur(res, (0, 0), 1.5).astype(np.float32)
+    b = cv2.GaussianBlur(tw, (0, 0), 1.5).astype(np.float32)
+    ok = (a.min(axis=2) > 5) & (b.min(axis=2) > 5)
+    gain = np.array([np.median(b[..., c][ok] / a[..., c][ok]) for c in range(3)], np.float32)
+    diff = (a * gain).mean(axis=2) - b.mean(axis=2)
+    mask = (diff >= levels).astype(np.uint8)
+    return cv2.resize(mask, (ow, oh), interpolation=cv2.INTER_NEAREST) > 0
