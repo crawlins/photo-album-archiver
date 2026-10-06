@@ -47,6 +47,8 @@ class PrintOptions:
             raise ValueError(f"format must be one of {', '.join(FORMATS)}, got {self.format!r}")
         if self.bleed_in < 0:
             raise ValueError("bleed cannot be negative")
+        if not 1 <= self.quality <= 100:
+            raise ValueError(f"quality must be between 1 and 100, got {self.quality}")
 
 
 @dataclass

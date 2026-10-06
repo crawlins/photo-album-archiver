@@ -158,7 +158,7 @@ def main(argv: list[str] | None = None) -> int:
     def print_args(q, page_size_required: bool):
         q.add_argument("--page-size", type=_size_arg, required=page_size_required, help="physical page size, e.g. 10x12in, 254x305mm, letter, a4" + ("" if page_size_required else " (default: album.json's, else letter)"))
         q.add_argument("--dpi", type=int, default=300, help="print resolution (72-1200)")
-        q.add_argument("--quality", type=int, default=95, help="JPEG quality")
+        q.add_argument("--quality", type=int, default=95, help="JPEG quality (1-100)")
         q.add_argument("--bleed", type=_length_arg, default=0.0, help="bleed on each side, e.g. 0.125in or 3mm")
         q.add_argument("--fill", type=_fill, default=(255, 255, 255), help="padding colour, e.g. '#ffffff'")
 

@@ -62,3 +62,15 @@ def test_mixed_dpi_and_empty_rejected(tmp_path):
         write_album_pdf([PdfPage(a, 100, 0, "a"), PdfPage(a, 300, 0, "b")], tmp_path / "x.pdf", "t")
     with pytest.raises(ValueError):
         write_album_pdf([], tmp_path / "x.pdf", "t")
+
+
+def test_failed_write_leaves_no_temporary_files(tmp_path, monkeypatch):
+    pages = [PdfPage(_image(tmp_path, "1.jpg", 400, 300), 100, 0, "p1")]
+
+    def broken(*a, **kw):
+        raise RuntimeError("disk on fire")
+
+    monkeypatch.setattr(pikepdf.Pdf, "save", broken)
+    with pytest.raises(RuntimeError, match="disk on fire"):
+        write_album_pdf(pages, tmp_path / "album.pdf", "t", epoch=0)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["1.jpg"]

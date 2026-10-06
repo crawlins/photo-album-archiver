@@ -290,7 +290,7 @@ def _run_page(job: _Job) -> dict:
                 "fit": info.fit_used,
                 "warnings": _page_warnings(page_report, opt.coverage_threshold) + [asdict(w) for w in info.warnings],
             }
-        entry.update(status=status, process_key=process_key, print_key=print_key, page_report=page_report, **fields)
+        entry.update(status=status, dpi=popt.dpi, process_key=process_key, print_key=print_key, page_report=page_report, **fields)
         entry.update(processed=str(processed.relative_to(out)), print=str(printed.relative_to(out)))
     except Exception as e:  # one bad page must not stop the album
         msg = str(e) if isinstance(e, RuntimeError) and str(e) else f"{type(e).__name__}: {e}"
@@ -345,7 +345,7 @@ def process_album(folder: str | Path, out: str | Path, opt: AlbumOptions | None 
     }
     jobs = [_Job(p, folder, out, opt, previous.get(p.folder.name)) for p in spec.pages]
 
-    def record(entry: dict) -> None:
+    def record(entry: dict, stop_on_failure: bool = True) -> None:
         report["pages"].append(entry)
         failed = entry["status"] == "failed"
         report["pages_failed" if failed else "pages_ok"] += 1
@@ -355,19 +355,25 @@ def process_album(folder: str | Path, out: str | Path, opt: AlbumOptions | None 
             detail = entry.get("error", "") if failed else f"{entry['capture_dpi']:.0f} dpi"
             codes = [x["code"] for x in entry.get("warnings", [])]
             progress(f"[{entry['index']:>{w}}/{n}] {entry['name']} {entry['status']} {detail}" + (f" ({', '.join(codes)})" if codes else ""))
-        if failed and opt.strict:
+        if failed and opt.strict and stop_on_failure:
             raise PageFailed(f"page {entry['name']!r} failed: {entry['error']}")
 
     if opt.jobs > 1:
         with ProcessPoolExecutor(max_workers=opt.jobs, mp_context=get_context("spawn"), initializer=_init_worker) as ex:
             futures = [ex.submit(_run_page, j) for j in jobs]
-            try:
-                for f in futures:
+            for i, f in enumerate(futures):
+                try:
                     record(f.result())
-            except PageFailed:
-                for f in futures:
-                    f.cancel()
-                raise
+                except PageFailed:
+                    # No new page starts. Pages already running finish, since a
+                    # worker cannot be stopped cleanly, and are recorded so that
+                    # the report accounts for every output they wrote.
+                    for g in futures[i + 1 :]:
+                        g.cancel()
+                    for g in futures[i + 1 :]:
+                        if not g.cancelled():
+                            record(g.result(), stop_on_failure=False)
+                    raise
     else:
         for j in jobs:
             record(_run_page(j))

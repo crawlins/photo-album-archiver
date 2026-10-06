@@ -32,9 +32,6 @@ def write_album_pdf(pages: list[PdfPage], path: str | Path, title: str, epoch: i
     ``epoch`` (seconds) fixes the creation and modification dates; with it,
     identical inputs give a byte-identical file.
     """
-    import img2pdf
-    import pikepdf
-
     if not pages:
         raise ValueError("no pages to write")
     dpis = {p.dpi for p in pages}
@@ -46,6 +43,20 @@ def write_album_pdf(pages: list[PdfPage], path: str | Path, title: str, epoch: i
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     raw = path.with_name(path.name + ".img2pdf.tmp")
+    try:
+        n = _write(pages, dpi, raw, tmp, title, epoch)
+        os.replace(tmp, path)
+    finally:
+        # Neither temporary file outlives the call, whether it succeeded or not.
+        raw.unlink(missing_ok=True)
+        tmp.unlink(missing_ok=True)
+    return n
+
+
+def _write(pages: list[PdfPage], dpi: int, raw: Path, tmp: Path, title: str, epoch: int | None) -> int:
+    import img2pdf
+    import pikepdf
+
     with open(raw, "wb") as f:
         img2pdf.convert(
             [str(p.image_path) for p in pages],
@@ -71,7 +82,4 @@ def write_album_pdf(pages: list[PdfPage], path: str | Path, title: str, epoch: i
             # img2pdf's file ID is random; drop it so both halves derive from the content.
             del pdf.trailer.ID
         pdf.save(tmp, deterministic_id=epoch is not None)
-        n = len(pdf.pages)
-    os.replace(tmp, path)
-    raw.unlink()
-    return n
+        return len(pdf.pages)
