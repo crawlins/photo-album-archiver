@@ -38,7 +38,12 @@ class FuseResult:
     gains: np.ndarray  # (n, 3) per-shot colour change at mid-grey (tone curve at 128 / 128)
     tone_reference: int  # index of the shot whose colours the others were matched to
     glare_fraction: list[float]  # share of each shot's covered area judged to be glare
-    weights_small: list[np.ndarray]  # per-shot weights at reduced resolution (debug)
+    weights_small: list[np.ndarray]  # per-shot weights at reduced resolution
+    # Intermediate values at the weights' resolution, for the glare detector.
+    toned_small: list[np.ndarray] | None = None  # tone-matched shots, uint8 BGR
+    small: list[np.ndarray] | None = None  # shots as taken, uint8 BGR
+    masks_small: list[np.ndarray] | None = None  # eroded coverage masks
+    excess_small: list[np.ndarray] | None = None  # brightness excess over the darkest shot, 0..1, before the halo
 
 
 def _small(a: np.ndarray, f: float, interp=cv2.INTER_AREA) -> np.ndarray:
@@ -197,9 +202,10 @@ def fuse(
     luts = _estimate_tone(small, small_m, reference)
 
     # Smoothed luminance of each tone-matched shot; +inf where not covered.
-    lum = []
+    lum, toned_small = [], []
     for i in range(n):
-        g = cv2.cvtColor(np.clip(_apply_tone(small[i], luts[i]), 0, 255).astype(np.uint8), cv2.COLOR_BGR2GRAY)
+        toned_small.append(np.clip(_apply_tone(small[i], luts[i]), 0, 255).astype(np.uint8))
+        g = cv2.cvtColor(toned_small[i], cv2.COLOR_BGR2GRAY)
         g = cv2.GaussianBlur(g.astype(np.float32) / 255.0, (0, 0), 2.0)
         lum.append(np.where(small_m[i], g, np.inf))
     lum_min = np.min(lum, axis=0)
@@ -211,10 +217,11 @@ def fuse(
     # weight map does not let a glare spot back in at its rim.
     r = p.halo_px + int(np.ceil(2 * sigma))
     halo = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
-    weights_small, glare_fraction = [], []
+    weights_small, glare_fraction, excess_small = [], [], []
     for i in range(n):
         m = small_m[i]
         excess = np.where(m, lum[i] - np.where(np.isfinite(lum_min), lum_min, 0), 0).astype(np.float32)
+        excess_small.append(np.maximum(excess, 0))
         excess = cv2.dilate(np.maximum(excess, 0), halo)
         glare_w = np.exp(-np.maximum(excess - p.glare_floor, 0) / p.glare_tau)
         dist = cv2.distanceTransform(np.pad(m, 1).astype(np.uint8), cv2.DIST_L2, 5)[1:-1, 1:-1]
@@ -235,4 +242,15 @@ def fuse(
     out = acc / np.maximum(wsum, 1e-12)[..., None]
     out[~coverage] = 0
     gains = luts[:, :, 128] / 128.0
-    return FuseResult(np.clip(out + 0.5, 0, 255).astype(np.uint8), coverage, gains, reference, glare_fraction, weights_small)
+    return FuseResult(
+        np.clip(out + 0.5, 0, 255).astype(np.uint8),
+        coverage,
+        gains,
+        reference,
+        glare_fraction,
+        weights_small,
+        toned_small,
+        small,
+        small_m,
+        excess_small,
+    )

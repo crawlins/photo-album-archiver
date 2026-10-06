@@ -9,8 +9,12 @@ import cv2
 import numpy as np
 
 from .fuse import FuseParams, fuse
+from .glare import GlareParams, adapt_bias, combine, glare_features, glare_map, residual
 from .page import PageQuad, detect_pages, estimate_aspect, focal_px_from_35mm
+from .regions import QualityParams, glare_regions, page_warnings, uncovered_regions
 from .register import register
+
+SCHEMA_VERSION = 2
 
 PREVIEW_MAX_SIDE = 3000
 
@@ -25,6 +29,8 @@ class PageOptions:
     # which is much noisier.
     focal_35mm: float | None = 26.0
     fuse: FuseParams = field(default_factory=FuseParams)
+    glare: GlareParams = field(default_factory=GlareParams)
+    quality: QualityParams = field(default_factory=QualityParams)
 
 
 @dataclass
@@ -39,8 +45,13 @@ class PageReport:
     aspect: float
     size: tuple[int, int]  # (w, h)
     coverage: float  # share of the page covered by at least one photo
-    glare_fraction: dict[int, float]
+    glare_fraction: dict[int, float]  # comparison with the other shots, as fuse() measures it
     gains: dict[int, list[float]]
+    schema_version: int = SCHEMA_VERSION
+    glare: dict = field(default_factory=lambda: {"fraction": 0.0, "per_shot": {}, "regions": []})  # residual glare
+    uncovered: dict = field(default_factory=lambda: {"fraction": 0.0, "regions": []})
+    warnings: list[dict] = field(default_factory=list)
+    detector: dict = field(default_factory=dict)  # glare and quality parameters, bias used
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -51,6 +62,8 @@ class PageResult:
     image: np.ndarray  # uint8 BGR
     report: PageReport
     corners_ref: np.ndarray  # page corners in the reference photo's full-res pixels
+    residual_glare: np.ndarray | None = None  # float32 0..1 on the detector's grid
+    coverage: np.ndarray | None = None  # bool, full resolution: pixel covered by at least one shot
 
 
 def _warp_all(images, homographies, size):
@@ -128,6 +141,7 @@ def process_page(images: list[np.ndarray], options: PageOptions | None = None, d
     out_w, out_m = _warp_all([images[i] for i in used], [P @ reg.homographies[i] for i in used], (W, H))
     result = fuse(out_w, out_m, preview.tone_reference, opt.fuse)
 
+    quality = _assess(result, used, reg.dropped, (W, H), opt)
     report = PageReport(
         n_inputs=len(images),
         reference=ref,
@@ -141,12 +155,61 @@ def process_page(images: list[np.ndarray], options: PageOptions | None = None, d
         coverage=round(float(result.coverage.mean()), 4),
         glare_fraction={i: round(g, 4) for i, g in zip(used, result.glare_fraction)},
         gains={i: [round(float(x), 3) for x in g] for i, g in zip(used, result.gains)},
+        glare=quality.glare,
+        uncovered=quality.uncovered,
+        warnings=quality.warnings,
+        detector=quality.detector,
     )
 
     if debug_dir is not None:
-        _write_debug(Path(debug_dir), preview, quad, to_canvas, result, used)
+        _write_debug(Path(debug_dir), preview, quad, to_canvas, result, used, quality)
 
-    return PageResult(result.image, report, corners_ref)
+    return PageResult(result.image, report, corners_ref, quality.residual, result.coverage)
+
+
+@dataclass
+class _Quality:
+    glare: dict
+    uncovered: dict
+    warnings: list[dict]
+    detector: dict
+    residual: np.ndarray
+    maps: list  # per used shot: GlareMap, or None with the detector off
+
+
+def _assess(result, used: list[int], dropped: list[int], size: tuple[int, int], opt: PageOptions) -> _Quality:
+    """Glare left in the composed page, uncovered area, and the warnings.
+
+    Runs on the grid of ``fuse``'s weights. Each shot's own glare map is
+    combined with the comparison against the other shots, then weighted by
+    the share each shot had in every composed pixel.
+    """
+    gp, q = opt.glare, opt.quality
+    masks = result.masks_small
+    grid = masks[0].shape
+    count = np.sum([m.astype(np.uint8) for m in masks], axis=0)
+    bias, adapted, maps = gp.bias, False, [None] * len(used)
+    if gp.enabled:
+        feats = [glare_features(t, m, s, gp) for t, m, s in zip(result.toned_small, masks, result.small)]
+        bias, adapted = adapt_bias(feats, result.excess_small, masks, gp, opt.fuse.glare_flag)
+        maps = [glare_map(f, m, gp, bias) for f, m in zip(feats, masks)]
+        per = [combine(g, ex, opt.fuse.glare_flag, gp.weak) for g, ex in zip(maps, result.excess_small)]
+        res = residual(per, result.weights_small)
+    else:
+        per = [np.zeros(grid, np.float32) for _ in used]
+        res = np.zeros(grid, np.float32)
+    covered = count > 0
+    glare = {
+        "fraction": round(float((res[covered] >= q.residual_threshold).mean()) if covered.any() else 0.0, 4),
+        "per_shot": {i: round(float((g[m] >= q.residual_threshold).mean()) if m.any() else 0.0, 4) for i, g, m in zip(used, per, masks)},
+        "regions": [r.to_dict() for r in glare_regions(res, count, used, masks, size, q)],
+    }
+    uncovered = {
+        "fraction": round(1.0 - float(result.coverage.mean()), 4),
+        "regions": [r.to_dict() for r in uncovered_regions(result.coverage, size, q, grid)],
+    }
+    detector = {"bias": round(float(bias), 4), "bias_adapted": adapted, "glare": asdict(gp), "quality": asdict(q)}
+    return _Quality(glare, uncovered, page_warnings(glare, uncovered, dropped), detector, res, maps)
 
 
 def _touch(q: np.ndarray, valid: np.ndarray) -> float:
@@ -193,7 +256,7 @@ def _choose_page(pool: list[tuple[PageQuad, float]], shapes: list[tuple[int, int
     return best
 
 
-def _write_debug(d: Path, preview, quad, to_canvas, result, used):
+def _write_debug(d: Path, preview, quad, to_canvas, result, used, quality: _Quality):
     d.mkdir(parents=True, exist_ok=True)
     vis = preview.image.copy()
     cv2.polylines(vis, [quad.corners.round().astype(np.int32).reshape(-1, 1, 2)], True, (0, 0, 255), 3)
@@ -201,3 +264,23 @@ def _write_debug(d: Path, preview, quad, to_canvas, result, used):
     for i, w in zip(used, result.weights_small):
         wn = w / max(float(w.max()), 1e-9)
         cv2.imwrite(str(d / f"weight_{i:02d}.png"), (wn * 255).astype(np.uint8))
+    # Each shot's glare score in grey, its grown glare areas in red.
+    for i, g in zip(used, quality.maps):
+        if g is None:
+            continue
+        img = cv2.cvtColor((g.score * 255).astype(np.uint8), cv2.COLOR_GRAY2BGR)
+        img[g.glare > 0] = (0, 0, 255)
+        cv2.imwrite(str(d / f"glare_{i:02d}.png"), img)
+    cv2.imwrite(str(d / "quality_overlay.jpg"), quality_overlay(result.image, quality.glare["regions"], quality.uncovered["regions"]))
+
+
+def quality_overlay(image: np.ndarray, glare_regions: list[dict], uncovered_regions: list[dict]) -> np.ndarray:
+    """The composed page with glare regions boxed in magenta and uncovered ones in cyan, numbered."""
+    vis = image.copy()
+    t = max(2, round(max(image.shape[:2]) / 600))
+    for regions, colour in ((glare_regions, (255, 0, 255)), (uncovered_regions, (255, 255, 0))):
+        for k, r in enumerate(regions):
+            x0, y0, x1, y1 = r["bbox_px"]
+            cv2.rectangle(vis, (x0, y0), (x1, y1), colour, t)
+            cv2.putText(vis, str(k), (x0 + 2 * t, y0 + 12 * t), cv2.FONT_HERSHEY_SIMPLEX, 0.4 * t, colour, t)
+    return vis

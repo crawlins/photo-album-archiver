@@ -43,17 +43,44 @@ the whole page (to get rid of glare) or each show part of an oversized page
    switching per pixel, and edges of partial shots are feathered, so seams
    blend.
 
-The report (JSON) gives which photos were used or dropped, how much of the page
-was covered, the glare found in each shot and the colour correction applied.
-The capture app can use coverage and glare to ask for another shot.
+6. **Check what is left.** A glare detector looks at each shot on its own
+   (whiter than its surroundings, washed-out colour, flattened texture,
+   clipped highlights), combines that with the comparison between shots, and
+   weights it by each shot's share of every composed pixel. What remains is
+   grouped into glare regions, each with where it is, which shots saw it and
+   why it stayed (`single_shot`: another shot from a different angle fixes
+   it; `all_shots_glared`: change the light). Page area no photo reached is
+   grouped and located the same way. The composed image is not changed.
+
+Every page comes with its metadata, `PAGE.json` next to `PAGE.png` (or at
+`--report`): which photos were used or dropped, coverage, the colour
+correction, the glare and uncovered regions, and warnings (`glare`,
+`incomplete_coverage`, `photos_dropped`), each with a code and a message:
+
+```json
+{"code": "glare", "fraction": 0.0412, "regions": 1, "single_shot": 1, "location": "bottom-left",
+ "message": "Glare remains on 4.1% of the page in 1 area (bottom-left). It was seen by only one photo; add a shot of that area from a different angle."}
+```
+
+Known limit: the single-photo detector is cautious. Faint sleeve sheen looks
+much like pale print content, white borders and white paper in one photo, so
+it reports glare it is sure of and misses much of the faint kind (on synthetic
+stitched pages it finds roughly 5 to 10% of the leftover glare, with false
+alarms under 0.2% of the page). Where shots overlap, the comparison between
+them still removes glare as before. Glare no shot sees past is reported, never
+painted over.
 
 ### Use
 
 ```sh
 cd backend
 python3 -m pip install -e '.[test]'
-albumproc page shot1.jpg shot2.jpg shot3.jpg -o page.png --report page.json --debug debug/
-albumproc synth samples/ --kind glare -n 4      # synthetic test photos (glare, stitch or pair)
+albumproc page shot1.jpg shot2.jpg shot3.jpg -o page.png --debug debug/   # also writes page.json
+albumproc page shot*.jpg -o page.png --masks     # also page.glare.png and page.uncovered.png
+albumproc glare shot1.jpg --overlay checked/     # glare in single photos, before processing a page
+albumproc glare-eval page.json --truth drawn.png # score page.glare.png against a hand-drawn mask
+albumproc synth samples/ --kind glare -n 4      # synthetic test photos (glare, stitch, pair or clean_white)
+albumproc synth samples/ --kind stitch -n 2 --glare-style sleeve   # long sleeve streaks instead of spots
 albumproc synth samples/ --kind pair --gap 0    # pages touching, as in an open album
 python3 -m pytest
 ```
