@@ -74,7 +74,7 @@ class AlbumRepository(
         val album = Album(newId(), name.trim(), pageSize.text, clock.instant())
         db.withTransaction {
             albums.insert(album)
-            ops.insert(UploadOp(kind = OpKind.ALBUM_META, albumId = album.id))
+            queueMetadata(album.id)
         }
         kicker.kick()
         return album
@@ -85,7 +85,7 @@ class AlbumRepository(
         val changed = db.withTransaction {
             val album = albums.get(id) ?: return@withTransaction false
             albums.update(album.copy(name = name.trim(), pageSize = pageSize.text))
-            ops.insert(UploadOp(kind = OpKind.ALBUM_META, albumId = id))
+            queueMetadata(id)
             true
         }
         if (changed) kicker.kick()
@@ -126,7 +126,7 @@ class AlbumRepository(
             if (page == null) {
                 page = Page(newId(), albumId, position = 1)
                 pages.insert(page)
-                ops.insert(UploadOp(kind = OpKind.ALBUM_META, albumId = albumId))
+                queueMetadata(albumId)
                 created = true
             }
             if (page.shotCount >= Limits.MAX_SHOTS_PER_PAGE) return@withTransaction AddShotResult.PageFull
@@ -159,7 +159,7 @@ class AlbumRepository(
             if (current.position >= Limits.MAX_PAGES_PER_ALBUM) return@withTransaction NextPageResult.AlbumFull
             val page = Page(newId(), albumId, current.position + 1)
             pages.insert(page)
-            ops.insert(UploadOp(kind = OpKind.ALBUM_META, albumId = albumId))
+            queueMetadata(albumId)
             NextPageResult.Started(page)
         }
         if (result is NextPageResult.Started) kicker.kick()
@@ -175,7 +175,7 @@ class AlbumRepository(
                 return@withTransaction false
             }
             pages.delete(pageId)
-            ops.insert(UploadOp(kind = OpKind.ALBUM_META, albumId = page.albumId))
+            queueMetadata(page.albumId)
             true
         }
         if (undone) kicker.kick()
@@ -235,13 +235,19 @@ class AlbumRepository(
         return true
     }
 
+    /** Queues the album's metadata with its page order as it is now; call inside the transaction that changed it. */
+    private suspend fun queueMetadata(albumId: String) {
+        val order = pages.forAlbum(albumId).joinToString(",") { it.id }
+        ops.insert(UploadOp(kind = OpKind.ALBUM_META, albumId = albumId, pages = order))
+    }
+
     private suspend fun removePageInTransaction(page: Page) {
         ops.deletePutShotsForPage(page.id)
         pages.delete(page.id) // shots cascade
         pages.shiftDownStep1(page.albumId, page.position)
         pages.shiftDownStep2(page.albumId)
         ops.insert(UploadOp(kind = OpKind.DELETE_PAGE, albumId = page.albumId, pageId = page.id))
-        ops.insert(UploadOp(kind = OpKind.ALBUM_META, albumId = page.albumId))
+        queueMetadata(page.albumId)
     }
 
     // ---- Albums opened from the server ----
@@ -249,14 +255,19 @@ class AlbumRepository(
     /**
      * Writes an album fetched from the server, with its pages marked as not yet
      * loaded and no upload ops, so nothing is sent back (Requirement 14.1).
+     * With [sendMetadata] the album's metadata is queued after all: the server
+     * had no page size for it, so the one the phone filled in has to reach the
+     * server or it never processes the album.
      */
-    suspend fun importAlbum(album: Album, pageCounts: List<Pair<String, Int>>) {
+    suspend fun importAlbum(album: Album, pageCounts: List<Pair<String, Int>>, sendMetadata: Boolean = false) {
         db.withTransaction {
             albums.insert(album)
             pages.insertAll(pageCounts.mapIndexed { i, (id, count) ->
                 Page(id, album.id, position = i + 1, shotCount = count, shotsLoaded = false)
             })
+            if (sendMetadata) queueMetadata(album.id)
         }
+        if (sendMetadata) kicker.kick()
     }
 
     /** Records a server page's shot list as `NOT_DOWNLOADED` rows (Requirement 14.3). */

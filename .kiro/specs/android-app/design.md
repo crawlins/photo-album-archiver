@@ -151,7 +151,11 @@ the shots it describes, and it is what the server's processing relies on
 (Requirement 8.9): "Next page" queues `ALBUM_META` after every `PUT_SHOT` of
 the page being left, and creating an album, or its page 1 on the first shot,
 queues `ALBUM_META` before that shot. When the server receives metadata naming
-a new page, it can process the previous page at once. A failed op therefore
+a new page, it can process the previous page at once. Each `ALBUM_META` row
+therefore records the album's page order at the moment it is queued, and that
+is the order it sends; reading the current order at send time would let an
+older queued row announce a page before the shots queued ahead of it. The
+album's name and page size are read when the row is sent. A failed op therefore
 blocks the ops behind it rather than being skipped, apart from the responses
 below that are dropped.
 
@@ -333,7 +337,8 @@ enum class ShotState { PRESENT, NOT_DOWNLOADED }
 @Entity data class UploadOp(@PrimaryKey(autoGenerate = true) val seq: Long = 0,
                             val kind: OpKind, val albumId: String,
                             val pageId: String?, val shotId: String?,
-                            val attempts: Int = 0)
+                            val attempts: Int = 0,
+                            val pages: String? = null) // ALBUM_META: page ids in order
 enum class OpKind { ALBUM_META, PUT_SHOT, DELETE_SHOT, DELETE_PAGE, DELETE_ALBUM }
 ```
 

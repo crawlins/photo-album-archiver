@@ -44,6 +44,9 @@ class FakeAlbumServer : Dispatcher() {
     /** "METHOD path" of every request, in order. */
     val log: MutableList<String> = CopyOnWriteArrayList()
 
+    /** The page ids of every album metadata PUT, in order. */
+    val metadataPages: MutableList<List<String>> = CopyOnWriteArrayList()
+
     /** Status codes to answer the next requests with, before any handling. */
     val failNext = ArrayDeque<Int>()
 
@@ -107,6 +110,7 @@ class FakeAlbumServer : Dispatcher() {
         } ?: status(404)
         "PUT" -> {
             val meta = ServerClient.json.decodeFromString<AlbumMetadata>(request.body.readUtf8())
+            metadataPages += meta.pages
             if (meta.name.isBlank()) return status(400)
             if (meta.pages.size > MAX_PAGES) return status(422)
             val a = albums.getOrPut(albumId) { StoredAlbum(albumId, meta.name, meta.pageSize, meta.created) }

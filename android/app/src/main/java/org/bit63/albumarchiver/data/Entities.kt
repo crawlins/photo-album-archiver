@@ -72,8 +72,11 @@ enum class OpKind { ALBUM_META, PUT_SHOT, DELETE_SHOT, DELETE_PAGE, DELETE_ALBUM
 
 /**
  * One change waiting to reach the server. Rows are sent strictly in [seq]
- * order (Requirement 8.9). `ALBUM_META` carries no payload: the album's
- * metadata is read when the op is sent, so it is always the latest.
+ * order (Requirement 8.9). An `ALBUM_META` op records the album's page order
+ * in [pages] when it is queued, because the server treats a page appearing
+ * as "the previous page is finished": sending the current order instead
+ * would announce a page before the shots queued ahead of it. The album's
+ * name and page size are read when the op is sent, so they are the latest.
  */
 @Entity(tableName = "upload_op", indices = [Index("albumId")])
 data class UploadOp(
@@ -83,4 +86,6 @@ data class UploadOp(
     val pageId: String? = null,
     val shotId: String? = null,
     val attempts: Int = 0,
+    /** `ALBUM_META` only: the page ids in order, comma-separated; null on ops queued before this was recorded. */
+    val pages: String? = null,
 )

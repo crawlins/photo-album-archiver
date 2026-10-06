@@ -78,7 +78,7 @@ class UploadProcessor(
 
     private suspend fun send(client: ServerClient, op: UploadOp): Step = when (op.kind) {
         OpKind.ALBUM_META -> {
-            val meta = metadata(op.albumId)
+            val meta = metadata(op.albumId, op.pages?.let { p -> p.split(',').filter { it.isNotEmpty() } })
             if (meta == null) Step.DROP else classify(client.putAlbum(op.albumId, meta), isShot = false)
         }
         OpKind.PUT_SHOT -> {
@@ -111,14 +111,17 @@ class UploadProcessor(
         }
     }
 
-    /** The album's current metadata; null when the album is gone from the phone. */
-    suspend fun metadata(albumId: String): AlbumMetadata? {
+    /**
+     * The album's current metadata, with [pages] as its page order when given
+     * (the order recorded when the op was queued); null when the album is
+     * gone from the phone.
+     */
+    suspend fun metadata(albumId: String, pages: List<String>? = null): AlbumMetadata? {
         val album = db.albums().get(albumId) ?: return null
-        val pages = db.pages().forAlbum(albumId)
         return AlbumMetadata(
             name = album.name,
             pageSize = album.pageSize,
-            pages = pages.map { it.id },
+            pages = pages ?: db.pages().forAlbum(albumId).map { it.id },
             created = album.createdAt.toString(),
         )
     }

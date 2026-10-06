@@ -150,10 +150,11 @@ class AlbumImporter(
         return when (val r = client.getAlbum(albumId)) {
             is ApiResult.Ok -> {
                 val a = r.value
-                val size = a.pageSize?.takeIf { PageSize.parse(it) != null } ?: PageSize.DEFAULT.text
+                val known = a.pageSize?.takeIf { PageSize.parse(it) != null }
                 repo.importAlbum(
-                    Album(a.id, a.name, size, parseInstant(a.created)),
+                    Album(a.id, a.name, known ?: PageSize.DEFAULT.text, parseInstant(a.created)),
                     a.pages.map { it.id to it.shots },
+                    sendMetadata = known == null,
                 )
                 loadLastPage(a.id)
                 Result.Opened

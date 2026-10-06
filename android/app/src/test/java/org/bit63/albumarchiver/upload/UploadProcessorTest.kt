@@ -65,6 +65,31 @@ class UploadProcessorTest {
         assertThat(fake.album(a.id)!!.pages.map { it.id }.last()).isEqualTo(p2.id)
     }
 
+    @Test fun `each metadata update lists the pages as they were when it was queued`() = blocking {
+        // Offline: shoot, edit the album, shoot again, then "Next page".
+        val a = album()
+        val p1 = shoot(a.id, "s1").page
+        repo.updateAlbum(a.id, "Renamed", PageSize.DEFAULT)
+        shoot(a.id, "s2")
+        val p2 = (repo.startNextPage(a.id) as NextPageResult.Started).page
+        processor.drain()
+        assertThat(requests()).containsExactly(
+            "PUT albums/${a.id}",
+            "PUT albums/${a.id}",
+            "PUT albums/${a.id}/pages/${p1.id}/shots/s1",
+            "PUT albums/${a.id}",
+            "PUT albums/${a.id}/pages/${p1.id}/shots/s2",
+            "PUT albums/${a.id}",
+        ).inOrder()
+        // Page 2 is announced only by the last update, after both of page 1's shots.
+        assertThat(fake.metadataPages).containsExactly(
+            listOf<String>(),
+            listOf(p1.id),
+            listOf(p1.id),
+            listOf(p1.id, p2.id),
+        ).inOrder()
+    }
+
     @Test fun `metadata is the album's latest state when sent`() = blocking {
         val a = album()
         repo.updateAlbum(a.id, "Renamed", PageSize.Preset.A3)

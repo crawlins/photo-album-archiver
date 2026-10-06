@@ -1,6 +1,7 @@
 package org.bit63.albumarchiver.data
 
 import android.content.Context
+import androidx.room.AutoMigration
 import androidx.room.Dao
 import androidx.room.Database
 import androidx.room.Insert
@@ -117,7 +118,11 @@ interface UploadOpDao {
     fun observePendingShots(albumId: String): Flow<Int>
 }
 
-@Database(entities = [Album::class, Page::class, Shot::class, UploadOp::class], version = 1)
+@Database(
+    entities = [Album::class, Page::class, Shot::class, UploadOp::class],
+    version = 2,
+    autoMigrations = [AutoMigration(from = 1, to = 2)],
+)
 @TypeConverters(Converters::class)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun albums(): AlbumDao
