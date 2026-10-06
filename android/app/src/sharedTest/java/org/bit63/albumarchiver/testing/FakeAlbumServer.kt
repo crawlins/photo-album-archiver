@@ -50,6 +50,9 @@ class FakeAlbumServer : Dispatcher() {
     /** Status codes to answer the next requests with, before any handling. */
     val failNext = ArrayDeque<Int>()
 
+    /** While set, every preview (`?size=thumb`) request is answered 503. */
+    @Volatile var thumbsDown = false
+
     /** How many upcoming full-shot downloads get a flipped byte. */
     @Volatile var corruptNextDownloads = 0
 
@@ -91,6 +94,7 @@ class FakeAlbumServer : Dispatcher() {
         val path = request.requestUrl!!.encodedPath
         log += "${request.method} $path" + (request.requestUrl!!.query?.let { "?$it" } ?: "")
         failNext.removeFirstOrNull()?.let { return MockResponse().setResponseCode(it) }
+        if (thumbsDown && request.requestUrl!!.queryParameter("size") == "thumb") return status(503)
         if (request.getHeader("Authorization") != "Bearer $token") return status(401)
         val seg = path.removePrefix("/api/v1/").split('/').filter { it.isNotEmpty() }
         when {
