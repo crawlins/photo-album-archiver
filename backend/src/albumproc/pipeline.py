@@ -91,13 +91,19 @@ def process_page(images: list[np.ndarray], options: PageOptions | None = None, d
     # from each photo on its own (sharper when one page fills the photo and a
     # neighbouring page is also in view), all in mosaic coordinates.
     pool = [(c, _touch(c.corners, preview.coverage)) for c in detect_pages(preview.image, preview.coverage)]
+    covered = float(preview.coverage.sum())
     for i, H in zip(used, pre_H):
         frame = np.ones(images[i].shape[:2], bool)
         for c in detect_pages(images[i]):
             if c.method == "fallback":
                 continue
             mapped = cv2.perspectiveTransform(c.corners.reshape(-1, 1, 2), H).reshape(4, 2).astype(np.float32)
-            pool.append((PageQuad(mapped, c.method, c.score), _touch(c.corners, frame)))
+            # Scores grow with the share of the image a candidate fills; rate
+            # it by its share of the mosaic instead, so that a close-up of
+            # part of the page does not outweigh the whole page in the mosaic.
+            own = cv2.contourArea(c.corners) / frame.size
+            score = c.score * (cv2.contourArea(mapped) / covered) / own if own > 0 else 0.0
+            pool.append((PageQuad(mapped, c.method, score), _touch(c.corners, frame)))
     quad = _choose_page(pool, [images[i].shape[:2] for i in used], pre_H)
     corners_ref = cv2.perspectiveTransform(quad.corners.reshape(-1, 1, 2), np.linalg.inv(to_canvas)).reshape(4, 2)
 
@@ -155,7 +161,7 @@ def _touch(q: np.ndarray, valid: np.ndarray) -> float:
     inside = (xy[:, 0] >= 0) & (xy[:, 1] >= 0) & (xy[:, 0] < valid.shape[1]) & (xy[:, 1] < valid.shape[0])
     d = np.zeros(len(pts))
     d[inside] = border[xy[inside, 1], xy[inside, 0]]
-    return float((d < 0.01 * max(valid.shape)).mean())
+    return float((d < 0.004 * max(valid.shape)).mean())
 
 
 def _choose_page(pool: list[tuple[PageQuad, float]], shapes: list[tuple[int, int]], to_canvas_H: list[np.ndarray]) -> PageQuad:
@@ -164,8 +170,9 @@ def _choose_page(pool: list[tuple[PageQuad, float]], shapes: list[tuple[int, int
     Each candidate's detection score is weighted by how well it fits the
     photos: how much of it each photo shows (averaged over photos, cubed so
     that "shown whole in every photo" beats sheer size, since two pages side
-    by side outscore one on area alone), and whether it is cut off by the
-    edge of what was photographed.
+    by side outscore one on area alone, and a wide shot may be too coarse to
+    show the line between them), and whether it is cut off by the edge of
+    what was photographed.
     """
     frames = [
         cv2.perspectiveTransform(np.float32([[0, 0], [w, 0], [w, h], [0, h]]).reshape(-1, 1, 2), H).reshape(4, 2).astype(np.float32)

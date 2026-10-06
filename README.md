@@ -19,15 +19,19 @@ the whole page (to get rid of glare) or each show part of an oversized page
 1. **Register.** SIFT features and a RANSAC homography for every overlapping
    pair; the best-connected photo becomes the reference and the others are
    chained to it. Photos that don't match anything are dropped and reported.
-2. **Find the page** in a low-res mosaic: candidate outlines from edges and
-   from colour contrast with the background, fitted to a quadrilateral either
-   by convex hull or by intersecting the four longest straight sides (which
-   survives glare crossing the page edge). Each photo is also searched on its
-   own. Pages of an open album touch with no background between them, so
-   each outline is also cut along straight lines running right across it
-   (the join between pages, the binding, a sleeve's edge). When more than one
-   page is in view the page that the photos show whole most consistently
-   wins, and pages cut off by the edge of the frame are discounted.
+2. **Find the page** in a low-res mosaic and in each photo: candidate
+   outlines from closed edges (nested ones too), from colour contrast with
+   the background, and from four long straight lines (for outlines that never
+   close, e.g. a page only whole in the mosaic). Pages of an open album touch
+   with no background between them, so each outline is also cut along
+   straight lines running right across it (the join between pages, the
+   binding, the edge of a page stack). A candidate is marked down when such
+   a line runs just inside its left or right side (it takes in a neighbour's
+   edge or a page stack), down its middle (two pages as one), or a wide strip
+   in from its top or bottom (the table's edge; a sleeve's thin crimped
+   edges belong to the page), and when it takes in background. Photos are
+   assumed upright, so neighbours lie left and right. Pages cut off by the
+   edge of what was photographed are discounted.
 3. **True proportions** from the perspective geometry of the corners
    (Zhang & He), using the phone's focal length (26 mm equivalent by default,
    or the real one from EXIF via `--focal-35mm`).
@@ -60,4 +64,6 @@ python3 -m pytest
   slightly distorted; that needs a curved-surface model.
 - Glare can only be removed where at least one shot sees that spot without it,
   so for oversized pages each region needs two shots from different angles.
-- Tested only on synthetic photos so far.
+- Tested on synthetic photos and on five real sleeved album pages (two shots
+  each, on the `real-test-photos` branch; `tests/test_real.py` runs them when
+  `real/` is checked out).
