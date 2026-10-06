@@ -89,10 +89,15 @@ class OpenServerAlbumTest {
         assertThat(repo.album("srv")).isNull()
     }
 
-    @Test fun `an album with no page size gets the default`() = blocking {
+    @Test fun `an album with no page size gets the default, and the server is told`() = blocking {
         seed().pageSize = null
         importer.open("srv")
         assertThat(repo.album("srv")!!.pageSize).isEqualTo("letter")
+        assertThat(processor.drain()).isEqualTo(UploadProcessor.Outcome.DONE)
+        val stored = fake.album("srv")!!
+        assertThat(stored.pageSize).isEqualTo("letter")
+        assertThat(stored.pages.map { it.id }).containsExactly("srv-page-1", "srv-page-2", "srv-page-3").inOrder()
+        assertThat(stored.pages.map { it.shots.size }).containsExactly(2, 1, 3).inOrder()
     }
 
     @Test fun `viewing a page fetches its shot list`() = blocking {
