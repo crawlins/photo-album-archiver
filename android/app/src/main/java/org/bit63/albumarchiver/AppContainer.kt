@@ -15,6 +15,7 @@ import org.bit63.albumarchiver.data.UploadKicker
 import org.bit63.albumarchiver.upload.AlbumImporter
 import org.bit63.albumarchiver.upload.LastPageLoadWorker
 import org.bit63.albumarchiver.upload.LastPageLoader
+import org.bit63.albumarchiver.upload.NetworkReturns
 import org.bit63.albumarchiver.upload.PageLoader
 import org.bit63.albumarchiver.upload.ServerAccess
 import org.bit63.albumarchiver.upload.ShotFetcher
@@ -51,7 +52,10 @@ open class AppContainer(
     val shotFetcher by lazy { ShotFetcher(repository, shotStore, server) }
     val thumbFetcher = ThumbFetcher(thumbDir, server)
     val lastPageLoader by lazy { LastPageLoader(repository, pageLoader, shotFetcher) }
-    val importer by lazy { AlbumImporter(repository, server) { loadLastPage(it) } }
+    val importer by lazy { AlbumImporter(repository, server, shotStore::isLowOnSpace) { loadLastPage(it) } }
+
+    /** Bumps when the network comes back, so failed loads retry (Requirement 14.9). Tests override it. */
+    open val networkReturns: NetworkReturns by lazy { NetworkReturns.watching(context) }
 
     /** Loads an opened album's last page; WorkManager in the app, overridable in tests. */
     open suspend fun loadLastPage(albumId: String) = LastPageLoadWorker.enqueue(context, settings, albumId)

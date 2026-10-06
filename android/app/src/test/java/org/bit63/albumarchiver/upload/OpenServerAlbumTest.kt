@@ -24,7 +24,7 @@ class OpenServerAlbumTest {
     private val lastPageLoader = LastPageLoader(repo, pageLoader, shotFetcher)
     private val thumbs = ThumbFetcher(File(env.dir, "thumbs"), server)
     private val loadRequests = mutableListOf<String>()
-    private val importer = AlbumImporter(repo, server) { loadRequests += it }
+    private val importer = AlbumImporter(repo, server, env.store::isLowOnSpace) { loadRequests += it }
     private val processor = UploadProcessor(env.db, env.settings, server)
 
     @After fun tearDown() {
@@ -87,6 +87,16 @@ class OpenServerAlbumTest {
         env.settings.setServer("", "")
         assertThat(importer.open("srv")).isEqualTo(AlbumImporter.Result.NoServer)
         assertThat(repo.album("srv")).isNull()
+    }
+
+    @Test fun `opening is refused while the phone is low on space`() = blocking {
+        seed()
+        env.freeBytes = 100L * 1024 * 1024
+        assertThat(importer.open("srv")).isEqualTo(AlbumImporter.Result.LowOnSpace)
+        assertThat(fake.log).isEmpty()
+        assertThat(repo.album("srv")).isNull()
+        env.freeBytes = 10L * 1024 * 1024 * 1024
+        assertThat(importer.open("srv")).isEqualTo(AlbumImporter.Result.Opened)
     }
 
     @Test fun `an album with no page size gets the default, and the server is told`() = blocking {

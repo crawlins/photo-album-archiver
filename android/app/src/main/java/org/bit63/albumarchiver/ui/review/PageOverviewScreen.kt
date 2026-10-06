@@ -54,6 +54,7 @@ fun PageOverviewScreen(albumId: String, openReview: (albumId: String, pageId: St
     val cells by vm.cells.collectAsStateWithLifecycle()
     val name by vm.albumName.collectAsStateWithLifecycle()
     val pageLoads by vm.loader.pages.collectAsStateWithLifecycle()
+    val networkReturns by container.networkReturns.count.collectAsStateWithLifecycle()
     var toDelete by remember { mutableStateOf<Page?>(null) }
 
     Scaffold(
@@ -78,7 +79,7 @@ fun PageOverviewScreen(albumId: String, openReview: (albumId: String, pageId: St
         ) {
             items(cells, key = { it.page.id }) { cell ->
                 val page = cell.page
-                LaunchedEffect(page.id, page.shotsLoaded) { vm.loader.ensurePage(page) }
+                LaunchedEffect(page.id, page.shotsLoaded, networkReturns) { vm.loader.ensurePage(page) }
                 Column(
                     Modifier
                         .padding(6.dp)

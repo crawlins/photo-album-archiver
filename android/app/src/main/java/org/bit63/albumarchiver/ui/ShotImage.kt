@@ -8,6 +8,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -38,9 +39,10 @@ fun ShotThumbnail(shot: Shot, modifier: Modifier = Modifier) {
         return
     }
     val thumbs = LocalContainer.current.thumbFetcher
+    val networkReturns by LocalContainer.current.networkReturns.count.collectAsState()
     var file by remember(shot.id) { mutableStateOf(thumbs.cached(shot.id)) }
     var failed by remember(shot.id) { mutableStateOf(false) }
-    LaunchedEffect(shot.id) {
+    LaunchedEffect(shot.id, networkReturns) {
         if (file == null) {
             file = thumbs.fetch(shot)
             failed = file == null
