@@ -155,6 +155,55 @@ class ServerTest {
         compose.waitUntil(5000) { compose.onAllNodesWithTag("serverAlbum:Old album").fetchSemanticsNodes().isEmpty() }
     }
 
+    /** A server album with two pages, opened on the phone, its last page loaded; returns page 1's id. */
+    private fun openTwoPageAlbum(): String {
+        fake.seed(
+            "srv", "Grandma", "a4",
+            listOf(listOf("a1" to realJpeg("a1"), "a2" to realJpeg("a2")), listOf("b1" to realJpeg("b1"))),
+        )
+        return io {
+            container.importer.open("srv")
+            container.testSettings.setLastAlbumId("srv")
+            repo.pages("srv").first().id
+        }
+    }
+
+    private fun showOverview() {
+        launch(container)
+        compose.waitForTag("pageNumber")
+        compose.onNodeWithTag("pageNumber").performClick()
+        compose.waitForTag("pageGrid")
+    }
+
+    @Test fun aPageThatFailedToLoadLoadsWhenTheNetworkReturns() {
+        val page1 = openTwoPageAlbum()
+        io { container.testSettings.setServer("http://127.0.0.1:1", fake.token) } // offline
+        showOverview()
+        compose.waitForText("Couldn't load", 10000)
+        assertThat(io { repo.page(page1)!!.shotsLoaded }).isFalse()
+
+        io { container.testSettings.setServer(fake.url, fake.token) }
+        compose.waitForIdle()
+        assertThat(io { repo.page(page1)!!.shotsLoaded }).isFalse() // nothing retries on its own
+        container.networkReturns.returned()
+        compose.waitUntil(10000) { io { repo.page(page1)!!.shotsLoaded } }
+        compose.waitGone("Couldn't load", 10000)
+    }
+
+    @Test fun aThumbnailThatFailedToLoadLoadsWhenTheNetworkReturns() {
+        openTwoPageAlbum()
+        fake.thumbsDown = true
+        showOverview()
+        compose.waitForText("Couldn't load", 10000)
+        val tries = fake.log.count { it.endsWith("/shots/a1?size=thumb") }
+        assertThat(tries).isEqualTo(1)
+
+        fake.thumbsDown = false
+        container.networkReturns.returned()
+        compose.waitGone("Couldn't load", 10000)
+        assertThat(fake.log.count { it.endsWith("/shots/a1?size=thumb") }).isEqualTo(2)
+    }
+
     @Test fun openingAServerAlbumContinuesItOnThePhone() {
         fake.seed(
             "srv", "Grandma", "a4",

@@ -29,6 +29,7 @@ import org.bit63.albumarchiver.data.ShotStore
 import org.bit63.albumarchiver.data.UploadKicker
 import org.bit63.albumarchiver.testing.FakeCamera
 import org.bit63.albumarchiver.ui.MainActivity
+import org.bit63.albumarchiver.upload.NetworkReturns
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.concurrent.atomic.AtomicInteger
@@ -60,6 +61,9 @@ open class TestContainer(
         if (drainUploads) scope.launch { uploadProcessor.drain() }
     }
     override val uploadRunning: Flow<Boolean> = MutableStateFlow(false)
+
+    /** Driven by the test instead of the device's network: call `returned()` to simulate the network coming back. */
+    override val networkReturns = NetworkReturns()
     val lastPageLoads = mutableListOf<String>()
 
     override suspend fun loadLastPage(albumId: String) {
