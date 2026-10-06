@@ -147,6 +147,25 @@ def test_failed_page_is_skipped(rerun):
     assert report["pdf_pages"] == 3 and report["pages_failed"] == 1
 
 
+def test_page_whose_processing_raises_is_failed_and_the_rest_carry_on(rerun, monkeypatch):
+    import albumproc.album as album_mod
+
+    album, out = rerun
+    real, calls = album_mod.process_page, []
+
+    def flaky(images, *a, **kw):
+        calls.append(len(images))
+        if len(calls) == 2:
+            raise ValueError("no page outline found")
+        return real(images, *a, **kw)
+
+    monkeypatch.setattr(album_mod, "process_page", flaky)
+    report = process_album(album, out, _opt(force=True))
+    assert _statuses(report) == ["ok", "failed", "ok"]
+    assert report["pages"][1]["error"] == "ValueError: no page outline found"
+    assert report["pages_failed"] == 1 and report["pdf_pages"] == 2
+
+
 def test_placeholder_keeps_page_count(rerun):
     album, out = rerun
     _add_broken_page(album)
@@ -164,6 +183,21 @@ def test_strict_stops_and_writes_no_pdf(rerun):
         process_album(album, out, _opt(strict=True))
     assert not (out / "album.pdf").exists()
     assert _statuses(json.loads((out / "report.json").read_text())) == ["failed"]
+
+
+def test_strict_in_parallel_reports_every_page_it_wrote(first_run, tmp_path, monkeypatch):
+    album, _, _, _ = first_run
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", EPOCH)
+    shutil.copytree(album, tmp_path / "album")
+    (tmp_path / "album" / "page-1" / "shot_0.jpg").write_bytes(b"broken")
+    out = tmp_path / "out"
+    with pytest.raises(PageFailed, match="page-1"):
+        process_album(tmp_path / "album", out, _opt(strict=True, jobs=2))
+    assert not (out / "album.pdf").exists()
+    report = json.loads((out / "report.json").read_text())
+    assert report["pages"][0]["status"] == "failed"
+    written = sorted(p.relative_to(out).as_posix() for p in (out / "print").glob("*")) if (out / "print").exists() else []
+    assert written == sorted(e["print"] for e in report["pages"] if e["status"] != "failed")
 
 
 def test_parallel_matches_serial(first_run, tmp_path, monkeypatch):
@@ -186,6 +220,21 @@ def test_cli_album_exit_codes(rerun, tmp_path, capsys):
     assert main(["album", str(tmp_path / "empty"), "-o", str(out), "--page-size", "a4"]) == 2
     with pytest.raises(SystemExit):
         main(["album", str(album), "-o", str(out), "--page-size", "huge"])
+
+
+def test_cli_page_output_is_the_page_pipelines(first_run, tmp_path, capsys):
+    from albumproc.pipeline import PageOptions, process_page
+
+    album, _, _, _ = first_run
+    photos = sorted((album / "page-1").glob("*.jpg"))
+    dst, rep = tmp_path / "page.png", tmp_path / "page.json"
+    assert main(["page", *map(str, photos), "-o", str(dst), "--report", str(rep)]) == 0
+    printed = json.loads(capsys.readouterr().out)
+    assert json.loads(rep.read_text()) == printed
+    assert printed["inputs"] == [str(p) for p in photos]
+    expected = process_page([cv2.imread(str(p), cv2.IMREAD_COLOR) for p in photos], PageOptions(max_side=8000, focal_35mm=26.0))
+    assert np.array_equal(cv2.imread(str(dst), cv2.IMREAD_COLOR), expected.image)
+    assert {k: v for k, v in printed.items() if k != "inputs"} == json.loads(json.dumps(expected.report.to_dict()))
 
 
 def test_cli_print(first_run, tmp_path, capsys):

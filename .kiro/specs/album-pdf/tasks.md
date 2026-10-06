@@ -103,6 +103,6 @@ under `backend/`. Requirement numbers refer to `requirements.md`.
 - [x] 9. Update the README
   - Mark "Album assembly, 300 DPI export, PDF" as working on synthetic
     albums, document the album folder layout, `album.json`, the two new
-    commands and the outputs, and add the known limits (page size must be
-    given, no automatic rotation, sRGB assumed).
+    commands and the outputs, and add the known limits (no automatic
+    rotation, sRGB assumed).
   - _Requirements: 11_

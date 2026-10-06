@@ -95,7 +95,8 @@ def test_capture_dpi_and_resolution_warnings():
 
 
 def test_invalid_options_rejected():
-    for opt in [PrintOptions(dpi=50), PrintOptions(fit="squash"), PrintOptions(rotate=45), PrintOptions(format="gif")]:
+    for opt in [PrintOptions(dpi=50), PrintOptions(fit="squash"), PrintOptions(rotate=45), PrintOptions(format="gif"),
+                PrintOptions(quality=0), PrintOptions(quality=101)]:
         with pytest.raises(ValueError):
             make_print_image(_page(100, 100), PageSize(1, 1), opt)
 

@@ -353,6 +353,7 @@ OUT_DIR/
       "name": "Front cover",
       "folder": "cover",
       "status": "ok",
+      "dpi": 300,
       "photos": ["cover/IMG_0001.jpg", "cover/IMG_0002.jpg"],
       "process_key": "sha256:…",
       "print_key": "sha256:…",

@@ -138,8 +138,9 @@ at the right size and colour.
 
 #### Acceptance criteria
 
-1. THE system SHALL write each print image as JPEG at quality 95 by default,
-   or as PNG or TIFF when the user selects that format.
+1. THE system SHALL write each print image as JPEG at quality 95 by default
+   (the user may choose 1 to 100), or as PNG or TIFF when the user selects
+   that format.
 2. THE system SHALL record the target DPI in every print image's resolution
    metadata (JFIF density for JPEG, pHYs for PNG, resolution tags for TIFF).
 3. THE system SHALL embed an sRGB ICC profile in every print image.
@@ -194,11 +195,15 @@ stop the rest, so that I only need to re-shoot the pages that failed.
    and continue with the next page.
 2. WHEN any page failed, THE system SHALL exit with status 3 after writing the
    outputs for the pages that succeeded.
-3. WHERE the user passes `--strict`, THE system SHALL stop at the first failed
-   page, exit with a non-zero status and write no PDF.
+3. WHERE the user passes `--strict`, THE system SHALL start no page after the
+   first failed page, exit with a non-zero status and write no PDF. Pages
+   already being processed in parallel when a page fails SHALL finish and be
+   recorded in the album report.
 4. WHERE the user passes `--placeholder`, THE system SHALL put a blank page of
    the page size, labelled with the page name and "missing", into the PDF in
-   place of each failed page, so that facing pages stay paired.
+   place of each failed page, so that facing pages stay paired. The blank page
+   takes the orientation of the page size as given, since a failed page's
+   own orientation is unknown.
 5. WHEN a processed page's coverage is below the coverage threshold (0.99 by
    default), THE system SHALL keep the page and add an "incomplete coverage"
    warning with the coverage value.
@@ -240,8 +245,9 @@ whole album, so that I can show which pages need another shot.
    DPI, fit mode used, output file paths and warnings.
 2. THE album report SHALL include totals: pages found, pages succeeded, pages
    failed, and the PDF's path and page count.
-3. THE album report SHALL record the hashes and options needed for
-   Requirement 9.
+3. THE album report SHALL record, for every page, what Requirement 9 compares:
+   a key over the photos' content hashes and the page pipeline options, and a
+   key over that key, the page size and the print options.
 4. THE system SHALL write the album report even when every page failed.
 5. THE system SHALL write each warning as an object with a machine-readable
    `code` (`low_resolution`, `upsampled`, `aspect_mismatch`,
