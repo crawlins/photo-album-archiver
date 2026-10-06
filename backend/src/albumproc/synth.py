@@ -179,12 +179,19 @@ def make_shots(
     return shots
 
 
-def make_case(seed: int, kind: str = "glare", n: int = 4) -> SynthPage:
+def make_case(seed: int, kind: str = "glare", n: int = 4, gap: float = 0.03, sides: int = 1, wide: bool = True) -> SynthPage:
     """Build a test case.
 
     kind="glare": n full-page shots from different angles, each with glare.
     kind="stitch": an oversized page shot in overlapping parts (left/right,
     or a 2x2 grid when n >= 4), each with glare.
+    kind="pair": pages lying flat side by side; the shots are of one of them
+    (the ground truth) and a neighbouring page is partly in view, on one
+    side or, with ``sides=2``, on both. With ``wide`` the last shot is wider
+    and shows every page in full; without it all shots are close-ups.
+    ``gap`` is the strip of table between pages as a fraction of the page
+    width; at 0 they touch, as in an open album, and only a thin shadow marks
+    the join.
     """
     rng = np.random.default_rng(seed)
     if kind == "stitch" and n >= 4:
@@ -195,6 +202,36 @@ def make_case(seed: int, kind: str = "glare", n: int = 4) -> SynthPage:
         page = make_page(rng)
     ph, pw = page.shape[:2]
     margin = int(0.6 * max(pw, ph))
+    if kind == "pair":
+        # Neighbouring pages in a row with the page, with a strip of table
+        # between them or touching.
+        others = [make_page(rng, pw, ph)]
+        gap = int(round(gap * pw))
+        left = bool(rng.integers(0, 2))
+        if sides == 2:
+            others.append(make_page(rng, pw, ph))
+        k_page = 1 if left or sides == 2 else 0  # the page's slot in the row
+        row = others[:k_page] + [page] + others[k_page:]
+        scene = make_table(rng, len(row) * pw + (len(row) - 1) * gap + 2 * margin, ph + 2 * margin)
+        for k, pg in enumerate(row):
+            x = margin + k * (pw + gap)
+            scene[margin : margin + ph, x : x + pw] = pg
+            if gap == 0 and k > 0:
+                # Abutting page edges throw a hairline shadow, darkest at the join.
+                xs = np.arange(x - 8, x + 8)
+                shade = 1 - 0.45 * np.exp(-(((xs - x + 0.5) / 2.5) ** 2))
+                band = scene[margin : margin + ph, xs].astype(np.float32) * shade[None, :, None]
+                scene[margin : margin + ph, xs] = np.clip(band, 0, 255).astype(np.uint8)
+        x_page = margin + k_page * (pw + gap)
+        rect = (x_page, margin, pw, ph)
+        n_close = n - 1 if wide and n >= 2 else n
+        targets = [(0.5 + rng.uniform(-0.05, 0.05), 0.5 + rng.uniform(-0.05, 0.05)) for _ in range(max(1, n_close))]
+        shots = make_shots(rng, scene, rect, targets, fill=0.62)
+        if wide and n >= 2:
+            # A wide shot of the whole row, aimed at its middle.
+            mid = (len(row) * pw + (len(row) - 1) * gap) / 2 - k_page * (pw + gap)
+            shots += make_shots(rng, scene, rect, [(mid / pw, 0.5)], fill=0.36 if len(row) == 2 else 0.25)
+        return SynthPage(page, scene, (x_page, margin), shots)
     scene = make_table(rng, pw + 2 * margin, ph + 2 * margin)
     scene[margin : margin + ph, margin : margin + pw] = page
     rect = (margin, margin, pw, ph)

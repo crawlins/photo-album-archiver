@@ -9,7 +9,7 @@ import cv2
 import numpy as np
 
 from .fuse import FuseParams, fuse
-from .page import detect_page, estimate_aspect, focal_px_from_35mm
+from .page import PageQuad, detect_pages, estimate_aspect, focal_px_from_35mm
 from .register import register
 
 PREVIEW_MAX_SIDE = 3000
@@ -87,7 +87,24 @@ def process_page(images: list[np.ndarray], options: PageOptions | None = None, d
     pre_w, pre_m = _warp_all([images[i] for i in used], pre_H, canvas_size)
     preview = fuse(pre_w, pre_m, params=opt.fuse)
 
-    quad = detect_page(preview.image, preview.coverage)
+    # Page candidates from the mosaic (the only view of a stitched page) and
+    # from each photo on its own (sharper when one page fills the photo and a
+    # neighbouring page is also in view), all in mosaic coordinates.
+    pool = [(c, _touch(c.corners, preview.coverage)) for c in detect_pages(preview.image, preview.coverage)]
+    covered = float(preview.coverage.sum())
+    for i, H in zip(used, pre_H):
+        frame = np.ones(images[i].shape[:2], bool)
+        for c in detect_pages(images[i]):
+            if c.method == "fallback":
+                continue
+            mapped = cv2.perspectiveTransform(c.corners.reshape(-1, 1, 2), H).reshape(4, 2).astype(np.float32)
+            # Scores grow with the share of the image a candidate fills; rate
+            # it by its share of the mosaic instead, so that a close-up of
+            # part of the page does not outweigh the whole page in the mosaic.
+            own = cv2.contourArea(c.corners) / frame.size
+            score = c.score * (cv2.contourArea(mapped) / covered) / own if own > 0 else 0.0
+            pool.append((PageQuad(mapped, c.method, score), _touch(c.corners, frame)))
+    quad = _choose_page(pool, [images[i].shape[:2] for i in used], pre_H)
     corners_ref = cv2.perspectiveTransform(quad.corners.reshape(-1, 1, 2), np.linalg.inv(to_canvas)).reshape(4, 2)
 
     # 2. Output rectangle: true aspect ratio, native resolution, capped.
@@ -130,6 +147,50 @@ def process_page(images: list[np.ndarray], options: PageOptions | None = None, d
         _write_debug(Path(debug_dir), preview, quad, to_canvas, result, used)
 
     return PageResult(result.image, report, corners_ref)
+
+
+def _touch(q: np.ndarray, valid: np.ndarray) -> float:
+    """Share of a quad's outline lying on or beyond the edge of ``valid``.
+
+    A page cut off by the edge of what was photographed has a side there, so
+    it looks like a smaller page unless this is taken into account.
+    """
+    border = cv2.distanceTransform(np.pad(valid, 1).astype(np.uint8), cv2.DIST_L2, 3)[1:-1, 1:-1]
+    pts = np.concatenate([q[k] + np.linspace(0, 1, 50, endpoint=False)[:, None] * (q[(k + 1) % 4] - q[k]) for k in range(4)])
+    xy = np.round(pts).astype(int)
+    inside = (xy[:, 0] >= 0) & (xy[:, 1] >= 0) & (xy[:, 0] < valid.shape[1]) & (xy[:, 1] < valid.shape[0])
+    d = np.zeros(len(pts))
+    d[inside] = border[xy[inside, 1], xy[inside, 0]]
+    return float((d < 0.004 * max(valid.shape)).mean())
+
+
+def _choose_page(pool: list[tuple[PageQuad, float]], shapes: list[tuple[int, int]], to_canvas_H: list[np.ndarray]) -> PageQuad:
+    """Pick the page the photos are of when more than one page is in view.
+
+    Each candidate's detection score is weighted by how well it fits the
+    photos: how much of it each photo shows (averaged over photos, cubed so
+    that "shown whole in every photo" beats sheer size, since two pages side
+    by side outscore one on area alone, and a wide shot may be too coarse to
+    show the line between them), and whether it is cut off by the edge of
+    what was photographed.
+    """
+    frames = [
+        cv2.perspectiveTransform(np.float32([[0, 0], [w, 0], [w, h], [0, h]]).reshape(-1, 1, 2), H).reshape(4, 2).astype(np.float32)
+        for (h, w), H in zip(shapes, to_canvas_H)
+    ]
+    best, best_score = pool[0][0], -1.0
+    for cand, touch in pool:
+        q = cand.corners.astype(np.float32)
+        area = cv2.contourArea(q)
+        # A quad mapped from another photo can fold over under strong
+        # perspective, and the overlap below is only defined for convex ones.
+        if area <= 0 or not cv2.isContourConvex(q.reshape(-1, 1, 2)):
+            continue
+        visible = [min(1.0, cv2.intersectConvexConvex(f, q)[0] / area) for f in frames]
+        score = cand.score * (1 - touch) ** 2 * float(np.mean(visible)) ** 3
+        if score > best_score:
+            best, best_score = cand, score
+    return best
 
 
 def _write_debug(d: Path, preview, quad, to_canvas, result, used):

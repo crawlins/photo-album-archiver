@@ -1,3 +1,4 @@
+import cv2
 import numpy as np
 
 from albumproc.fuse import fuse
@@ -25,3 +26,22 @@ def test_glare_spot_replaced_and_exposure_matched():
     err = np.abs(res.image.astype(int) - truth.astype(int))[inside].mean()
     assert err < 6
     assert res.glare_fraction[0] > res.glare_fraction[1]
+
+
+def test_handover_between_shots_is_gradual():
+    # Two glare-free shots that differ by shading and a pixel of
+    # misregistration, as real photos of a page in a sleeve do. "Darker wins"
+    # alone flips between them at every texture edge, leaving a patchwork of
+    # tones; the weights must instead hand over gradually.
+    rng = np.random.default_rng(4)
+    h, w = 600, 800
+    truth = np.clip(cv2.GaussianBlur(rng.normal(0, 1, (h, w, 3)).astype(np.float32), (0, 0), 6) * 400 + 128, 30, 220)
+    shade = cv2.GaussianBlur(rng.normal(0, 1, (h, w)).astype(np.float32), (0, 0), 25)[..., None] * 6
+    shade += 0.05 * (np.mgrid[0:h, 0:w][1] / w - 0.5)[..., None]
+    moved = cv2.warpAffine(truth, np.float32([[1, 0, 1.5], [0, 1, 0.8]]), (w, h), borderMode=cv2.BORDER_REFLECT)
+    a = np.clip(truth * (1 + shade) + rng.normal(0, 3, truth.shape), 0, 255).astype(np.uint8)
+    b = np.clip(moved * (1 - shade) + rng.normal(0, 3, truth.shape), 0, 255).astype(np.uint8)
+    res = fuse([a, b], [np.ones((h, w), bool)] * 2, reference=0)
+    share = res.weights_small[0] / (res.weights_small[0] + res.weights_small[1])
+    gy, gx = np.gradient(share)
+    assert np.hypot(gx, gy).max() < 0.1  # was 0.26 with per-pixel switching
