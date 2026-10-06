@@ -72,7 +72,7 @@ def test_album_outputs(first_run):
     assert report["title"] == album.name and report["dpi"] == 150
     assert json.loads((out / "report.json").read_text()) == report
     for k, p in enumerate(report["pages"], 1):
-        assert p["name"] == f"page-{k}"
+        assert p["name"] == f"page-{k}" and p["dpi"] == 150
         assert p["photos"] == [f"page-{k}/shot_0.jpg", f"page-{k}/shot_1.jpg"]
         assert p["print"] == f"print/{k:03d}-page-{k}.jpg" and (out / p["print"]).exists()
         assert p["processed"] == f"pages/{k:03d}-page-{k}.png" and (out / p["processed"]).exists()
@@ -96,6 +96,7 @@ def test_rerun_reuses_everything(rerun, first_run):
     assert {p: p.stat().st_mtime_ns for p in (out / "print").iterdir()} == before
     assert report["pdf_pages"] == 3
     assert [p["warnings"] for p in report["pages"]] == [p["warnings"] for p in first_run[2]["pages"]]
+    assert [p["dpi"] for p in report["pages"]] == [150] * 3
 
 
 def test_changed_photo_reprocesses_only_that_page(rerun):
@@ -117,6 +118,7 @@ def test_print_option_change_reuses_processed_pages(rerun):
     report = process_album(album, out, AlbumOptions(print=PrintOptions(dpi=100, bleed_in=0.1), page_size=SIZE))
     assert _statuses(report) == ["reused"] * 3
     assert [p["size_px"] for p in report["pages"]] == [[520, 400]] * 3
+    assert [p["dpi"] for p in report["pages"]] == [100] * 3  # the new target, though the page was reused
     with pikepdf.open(out / "album.pdf") as pdf:
         assert [round(float(v), 2) for v in pdf.pages[0].TrimBox] == [7.2, 7.2, 367.2, 280.8]
 
@@ -163,6 +165,7 @@ def test_page_whose_processing_raises_is_failed_and_the_rest_carry_on(rerun, mon
     report = process_album(album, out, _opt(force=True))
     assert _statuses(report) == ["ok", "failed", "ok"]
     assert report["pages"][1]["error"] == "ValueError: no page outline found"
+    assert "dpi" not in report["pages"][1]  # a failed page has no print image to have a DPI
     assert report["pages_failed"] == 1 and report["pdf_pages"] == 2
 
 
