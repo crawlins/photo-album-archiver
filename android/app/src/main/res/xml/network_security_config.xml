@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The server usually lives on the user's own LAN, often without a TLS
+  certificate, so cleartext HTTP is allowed. The settings screen warns
+  whenever the server URL uses http (Requirement 9.4).
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

@@ -1,0 +1,40 @@
+# Runs the album server as an unprivileged user, with its data folder in
+# /var/lib/albumserver. Install with:
+#   sudo useradd --system --home-dir /var/lib/albumserver albumserver
+#   sudo cp albumserver.service /etc/systemd/system/
+#   sudo cp albumserver.toml /etc/albumserver.toml
+#   sudo systemctl daemon-reload && sudo systemctl enable --now albumserver
+# ExecStart assumes the backend package is installed in /opt/albumserver.
+
+[Unit]
+Description=Photo album archiver server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=albumserver
+Group=albumserver
+ExecStart=/opt/albumserver/bin/albumserver --config /etc/albumserver.toml serve
+StateDirectory=albumserver
+StateDirectoryMode=0750
+Environment=ALBUMSERVER_DATA_DIR=/var/lib/albumserver
+# SIGTERM reaches the server, which finishes requests in progress and stops
+# its worker; anything left after the timeout is killed.
+KillMode=mixed
+TimeoutStopSec=90
+Restart=on-failure
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target
