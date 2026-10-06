@@ -75,6 +75,7 @@ fun ReviewScreen(albumId: String, pageId: String, index: Int, back: () -> Unit, 
     val pages by vm.pages.collectAsStateWithLifecycle()
     val pageLoads by vm.loader.pages.collectAsStateWithLifecycle()
     val shotLoads by vm.loader.shots.collectAsStateWithLifecycle()
+    val networkReturns by container.networkReturns.count.collectAsStateWithLifecycle()
     var dialog by remember { mutableStateOf<ReviewDialog?>(null) }
     var menu by remember { mutableStateOf(false) }
 
@@ -83,7 +84,7 @@ fun ReviewScreen(albumId: String, pageId: String, index: Int, back: () -> Unit, 
     val pos = position ?: return
     val current = page
 
-    LaunchedEffect(current?.id, current?.shotsLoaded) { current?.let { vm.loader.ensurePage(it) } }
+    LaunchedEffect(current?.id, current?.shotsLoaded, networkReturns) { current?.let { vm.loader.ensurePage(it) } }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         val count = if (current?.shotsLoaded == true) shots.size else (current?.shotCount ?: 0)
@@ -106,7 +107,7 @@ fun ReviewScreen(albumId: String, pageId: String, index: Int, back: () -> Unit, 
                 modifier = Modifier.fillMaxSize().testTag("pager"),
             ) { i ->
                 val shot = shots.getOrNull(i) ?: return@HorizontalPager
-                LaunchedEffect(shot.id, shot.state) { vm.loader.ensureShot(shot) }
+                LaunchedEffect(shot.id, shot.state, networkReturns) { vm.loader.ensureShot(shot) }
                 when {
                     shot.state == ShotState.PRESENT -> ZoomableShot(File(shot.path))
                     shotLoads[shot.id] == LoadState.FAILED -> FullPlaceholder("Couldn't load this shot")

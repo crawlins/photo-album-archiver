@@ -75,6 +75,20 @@ class ServerAlbumsViewModelTest {
         vm.refreshing.await { !it }
     }
 
+    @Test fun `coming back to the list fetches again, after the first showing`() = blocking {
+        env.settings.setServer("", "")
+        val vm = vm()
+        assertThat(vm.state.await { it is ServerAlbumsState.Error }).isEqualTo(ServerAlbumsState.Error(ServerProblem.NO_SERVER))
+        vm.resumed() // the first showing: init has already fetched
+        vm.refreshing.await { !it }
+        env.settings.setServer(fake.url, fake.token) // set up in Settings, then back
+        seedTwo()
+        val before = fake.log.size
+        vm.resumed()
+        vm.state.await { (it as? ServerAlbumsState.Loaded)?.rows?.size == 2 }
+        assertThat(fake.log.size).isEqualTo(before + 1)
+    }
+
     @Test fun `each error state says which`() = blocking {
         env.settings.setServer("", "")
         assertThat(vm().state.await { it is ServerAlbumsState.Error }).isEqualTo(ServerAlbumsState.Error(ServerProblem.NO_SERVER))

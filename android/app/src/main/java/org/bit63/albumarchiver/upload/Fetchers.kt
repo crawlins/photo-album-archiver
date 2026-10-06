@@ -129,11 +129,14 @@ class ThumbFetcher(private val cacheDir: File, private val server: ServerAccess)
 /**
  * Opens a server album on the phone (Requirement 14.1): fetches only its
  * metadata, writes the album and its pages in one transaction with no upload
- * ops, then loads the last page in the background.
+ * ops, then loads the last page in the background. It refuses while the
+ * phone is below the low-storage threshold ([lowOnSpace]), because loading
+ * the last page alone can take up to 25 full shots.
  */
 class AlbumImporter(
     private val repo: AlbumRepository,
     private val server: ServerAccess,
+    private val lowOnSpace: () -> Boolean = { false },
     private val loadLastPage: suspend (albumId: String) -> Unit,
 ) {
     sealed interface Result {
@@ -141,11 +144,13 @@ class AlbumImporter(
         data object NoServer : Result
         data object AuthFailed : Result
         data object Unreachable : Result
+        data object LowOnSpace : Result
         data class Failed(val code: Int) : Result
     }
 
     suspend fun open(albumId: String): Result {
         if (repo.album(albumId) != null) return Result.Opened
+        if (withContext(Dispatchers.IO) { lowOnSpace() }) return Result.LowOnSpace
         val client = server.client() ?: return Result.NoServer
         return when (val r = client.getAlbum(albumId)) {
             is ApiResult.Ok -> {

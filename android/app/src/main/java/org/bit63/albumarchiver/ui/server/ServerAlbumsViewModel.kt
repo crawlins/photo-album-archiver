@@ -65,6 +65,17 @@ class ServerAlbumsViewModel(
         refresh()
     }
 
+    private var resumedBefore = false
+
+    /**
+     * The screen is showing again. The first time is the open that [init]
+     * already loaded for; after that, such as back from Settings, the list is
+     * fetched again so it is never an old answer or an old error (Requirement 13.3).
+     */
+    fun resumed() {
+        if (resumedBefore) refresh() else resumedBefore = true
+    }
+
     fun refresh() {
         viewModelScope.launch {
             _refreshing.value = true
@@ -114,6 +125,7 @@ class ServerAlbumsViewModel(
                 AlbumImporter.Result.NoServer -> _message.value = ServerProblem.NO_SERVER.message
                 AlbumImporter.Result.AuthFailed -> _message.value = ServerProblem.AUTH.message
                 AlbumImporter.Result.Unreachable -> _message.value = "Couldn't open: ${ServerProblem.UNREACHABLE.message}"
+                AlbumImporter.Result.LowOnSpace -> _message.value = "Couldn't open: this phone has less than 500 MB free."
                 is AlbumImporter.Result.Failed -> _message.value = "Couldn't open: the server returned ${r.code}."
             }
         }

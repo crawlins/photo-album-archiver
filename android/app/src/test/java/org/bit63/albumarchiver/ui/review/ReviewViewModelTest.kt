@@ -102,7 +102,8 @@ class ReviewViewModelTest {
         vm.deleteShot(vm.shots.await { it.size == 1 }.single())
         vm.pages.await { it.size == 2 }
         vm.position.await { it == Slot(pageIds[2], 0) }
-        assertThat(vm.page.await { it?.id == pageIds[2] }!!.position).isEqualTo(2)
+        // The page row can be seen once before its renumbering lands, so wait for the final state.
+        vm.page.await { it?.id == pageIds[2] && it.position == 2 }
     }
 
     @Test fun `the last page's only shot does not take the page with it`() = blocking {

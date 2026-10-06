@@ -399,9 +399,10 @@ enum class OpKind { ALBUM_META, PUT_SHOT, DELETE_SHOT, DELETE_PAGE, DELETE_ALBUM
   overview. Thumbnails and full images are decoded downsampled (Coil) so a
   25-shot page of 12 MP photos does not exhaust memory.
 - `ServerAlbumsScreen` + `ServerAlbumsViewModel`: fetches `GET /api/v1/albums`
-  on open and on pull-to-refresh, marks albums whose id is in the local
-  database, opens the others on tap or "Open on this phone" (after the space
-  check) and offers "Delete from server" for them, and shows the error states
+  on open, on returning to it and on pull-to-refresh, marks albums whose id is in the local
+  database, opens the others on tap or "Open on this phone" (refused while
+  the phone has less than the 500 MB low-storage threshold free, since the
+  last page alone can be 25 full shots) and offers "Delete from server" for them, and shows the error states
   with "Retry" or a link to Settings. Nothing is cached; the list is
   always the server's current answer.
 - `SettingsScreen` + `SettingsViewModel`: URL, token, network choice, http

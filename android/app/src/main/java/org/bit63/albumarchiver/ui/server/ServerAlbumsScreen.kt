@@ -41,6 +41,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import org.bit63.albumarchiver.data.PageSize
@@ -69,6 +70,11 @@ fun ServerAlbumsScreen(back: () -> Unit, openSettings: () -> Unit, opened: () ->
     val message by vm.message.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     var toDelete by remember { mutableStateOf<ServerAlbumSummary?>(null) }
+
+    LifecycleResumeEffect(vm) {
+        vm.resumed()
+        onPauseOrDispose {}
+    }
 
     LaunchedEffect(message) {
         message?.let {

@@ -110,8 +110,9 @@ the main view with large controls, so that I can frame and shoot quickly.
 
 #### Acceptance criteria
 
-1. THE capture screen SHALL fill the screen with the rear camera's live
-   preview.
+1. THE capture screen SHALL show the rear camera's live preview as large as
+   the screen allows without cropping it, so that everything in the preview
+   is in the shot and nothing in the shot is hidden from the user.
 2. THE capture screen SHALL show a shutter button that takes a shot and a
    "Next page" button that starts a new page.
 3. THE capture screen SHALL show the current album's name, the current page's
@@ -194,8 +195,10 @@ reaching for the touchscreen.
 2. WHILE the capture screen is in the foreground with an album open, WHEN the
    user presses volume down, THE app SHALL start the next page exactly as the
    "Next page" button does, including the page limit.
-3. WHILE the capture screen is in the foreground, THE app SHALL consume volume
-   key presses, so that they do not change the volume.
+3. WHILE the capture screen is in the foreground with an album open, THE app
+   SHALL consume volume key presses, so that they do not change the volume.
+   With no album open the keys do nothing on this screen, so they keep
+   changing the volume.
 4. WHEN a volume key is held down, THE app SHALL act once per press and SHALL
    ignore the key's auto-repeat.
 5. WHILE any other screen, dialog or the navigation drawer is showing, or the
@@ -352,8 +355,9 @@ albums I want.
    SHALL fetch and list every album on the server with its name, page size,
    page count, shot count and when it was last changed.
 2. THE server albums list SHALL mark each album that is also on this phone.
-3. THE server albums list SHALL refresh when opened and when the user pulls
-   down on it.
+3. THE server albums list SHALL refresh when opened, when the user returns to
+   it from another screen such as Settings, and when the user pulls down on
+   it.
 4. IF no server is configured, the server cannot be reached or the
    credentials are rejected, THEN THE server albums list SHALL say which, and
    offer "Retry" or a link to Settings.
