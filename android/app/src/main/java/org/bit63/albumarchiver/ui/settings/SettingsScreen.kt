@@ -33,6 +33,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import org.bit63.albumarchiver.ui.LocalContainer
+import org.bit63.albumarchiver.ui.rememberLocalNetworkAccess
 
 /** Server URL, access token, upload network and "Test connection" (Requirement 9). */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -43,6 +44,7 @@ fun SettingsScreen(back: () -> Unit) {
         SettingsViewModel(container.settings, { container.rescheduleUploads() })
     }
     val form by vm.form.collectAsStateWithLifecycle()
+    val withLocalNetwork = rememberLocalNetworkAccess()
 
     Scaffold(
         topBar = {
@@ -88,11 +90,11 @@ fun SettingsScreen(back: () -> Unit) {
                 modifier = Modifier.fillMaxWidth().testTag("token"),
             )
             Row(Modifier.padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Button(onClick = vm::save, enabled = form.urlError == null, modifier = Modifier.testTag("save")) {
+                Button(onClick = { withLocalNetwork(vm::save) }, enabled = form.urlError == null, modifier = Modifier.testTag("save")) {
                     Text("Save")
                 }
                 OutlinedButton(
-                    onClick = vm::testConnection,
+                    onClick = { withLocalNetwork(vm::testConnection) },
                     enabled = form.canTest,
                     modifier = Modifier.padding(start = 8.dp).testTag("testConnection"),
                 ) { Text(if (form.testing) "Testing…" else "Test connection") }

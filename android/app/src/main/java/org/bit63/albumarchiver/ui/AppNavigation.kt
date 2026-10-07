@@ -1,11 +1,15 @@
 package org.bit63.albumarchiver.ui
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.platform.LocalContext
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import kotlinx.coroutines.launch
 import org.bit63.albumarchiver.ui.capture.CaptureScreen
 import org.bit63.albumarchiver.ui.review.PageOverviewScreen
 import org.bit63.albumarchiver.ui.review.ReviewScreen
@@ -23,6 +27,18 @@ object Routes {
 @Composable
 fun AppNavigation() {
     val nav = rememberNavController()
+    val context = LocalContext.current
+    val container = LocalContainer.current
+    val withLocalNetwork = rememberLocalNetworkAccess()
+    val scope = rememberCoroutineScope()
+    // A server saved before the app asked for local network access (or on an
+    // update to Android 17) would leave uploads failing silently, so ask once
+    // at launch and restart the uploads when the answer comes back.
+    LaunchedEffect(Unit) {
+        if (!hasLocalNetworkAccess(context) && container.settings.currentServer() != null) {
+            withLocalNetwork { scope.launch { container.rescheduleUploads() } }
+        }
+    }
     NavHost(navController = nav, startDestination = Routes.CAPTURE) {
         composable(Routes.CAPTURE) {
             CaptureScreen(
