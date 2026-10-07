@@ -18,7 +18,7 @@ import json
 import os
 import re
 from concurrent.futures import ProcessPoolExecutor
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from multiprocessing import get_context
 from pathlib import Path
 from typing import Callable
@@ -37,7 +37,9 @@ REPORT = "report.json"
 REPORT_VERSION = 1
 DEFAULT_PAGE_SIZE = PageSize(8.5, 11)  # US letter, the capture app's default for a new album
 _ALBUM_KEYS = {"title", "page_size", "fit", "pages"}
-_PAGE_KEYS = {"folder", "name", "page_size", "rotate", "fit"}
+_PAGE_KEYS = {"folder", "name", "page_size", "rotate", "fit", "curvature", "binding"}
+CURVATURE_MODES = ("auto", "off", "force")
+BINDINGS = ("auto", "left", "right", "top", "bottom")
 
 
 class AlbumError(ValueError):
@@ -58,6 +60,8 @@ class PageSpec:
     size: PageSize
     rotate: int = 0
     fit: str | None = None  # None: the album options' fit
+    curvature: str | None = None  # None: the album options' curvature mode
+    binding: str | None = None  # None: the album options' binding side
     problem: str | None = None  # why the page cannot be processed, found during discovery
 
     @property
@@ -116,6 +120,12 @@ def _check_keys(d: dict, allowed: set[str], where: str) -> None:
 def _check_fit(value, where: str) -> str:
     if value not in FITS:
         raise AlbumError(f"{where}: fit must be one of {', '.join(FITS)}, got {value!r}")
+    return value
+
+
+def _check_choice(value, choices: tuple[str, ...], key: str, where: str) -> str:
+    if value not in choices:
+        raise AlbumError(f"{where}: {key} must be one of {', '.join(choices)}, got {value!r}")
     return value
 
 
@@ -182,6 +192,8 @@ def discover_album(folder: str | Path, default_size: PageSize | None = None) -> 
                     size=_size(e["page_size"], f"{where}: page_size") if "page_size" in e else album_size,
                     rotate=_check_rotate(e["rotate"], where) if "rotate" in e else 0,
                     fit=_check_fit(e["fit"], where) if "fit" in e else album_fit,
+                    curvature=_check_choice(e["curvature"], CURVATURE_MODES, "curvature", where) if "curvature" in e else None,
+                    binding=_check_choice(e["binding"], BINDINGS, "binding", where) if "binding" in e else None,
                     problem=problem,
                 )
             )
@@ -229,6 +241,14 @@ def _page_warnings(page_report: dict, threshold: float) -> list[dict]:
     return w
 
 
+def _page_options(base: PageOptions, page: PageSpec) -> PageOptions:
+    """The pipeline options for one page: the album's, with the page's own curvature settings."""
+    if page.curvature is None and page.binding is None:
+        return base
+    cp = replace(base.curvature, mode=page.curvature or base.curvature.mode, binding=page.binding or base.curvature.binding)
+    return replace(base, curvature=cp)
+
+
 @dataclass
 class _Job:
     page: PageSpec
@@ -247,7 +267,8 @@ def _run_page(job: _Job) -> dict:
         if page.problem:
             raise RuntimeError(page.problem)
         popt = PrintOptions(**{**asdict(opt.print), "rotate": page.rotate, "fit": page.fit or opt.print.fit})
-        process_key = _key({"photos": [_sha256_file(p) for p in page.photos], "page": asdict(opt.page), "version": __version__})
+        page_opt = _page_options(opt.page, page)
+        process_key = _key({"photos": [_sha256_file(p) for p in page.photos], "page": asdict(page_opt), "version": __version__})
         print_key = _key({"process": process_key, "size": [page.size.a_in, page.size.b_in], "print": asdict(popt), "coverage": opt.coverage_threshold})
         processed = out / "pages" / f"{page.stem}.png"
         printed = out / "print" / f"{page.stem}{FORMATS[popt.format]}"
@@ -264,7 +285,7 @@ def _run_page(job: _Job) -> dict:
                     raise RuntimeError(f"cannot read {p.relative_to(job.album)}")
                 images.append(img)
             debug = out / "debug" / page.stem if opt.debug else None
-            res = process_page(images, opt.page, debug_dir=debug)
+            res = process_page(images, page_opt, debug_dir=debug)
             del images
             image = res.image
             page_report = json.loads(json.dumps(res.report.to_dict()))  # int keys -> str, as in the saved report

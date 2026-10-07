@@ -35,15 +35,29 @@ the whole page (to get rid of glare) or each show part of an oversized page
 3. **True proportions** from the perspective geometry of the corners
    (Zhang & He), using the phone's focal length (26 mm equivalent by default,
    or the real one from EXIF via `--focal-35mm`).
-4. **Warp** every full-resolution photo straight into the flat page rectangle
-   (one resampling step), at roughly the resolution the photos captured.
-5. **Fuse.** Tone curves match every shot's exposure and colour to one of
+4. **Bent pages.** A page held at its binding lifts off the table and bends
+   near it, so its edges bow there. The page outline is traced as curves,
+   long straight lines in the page (print borders, mats, titles) are found,
+   and a page bent across one side (a cylinder: the profile's angle as a
+   spline over the distance along the page) is fitted to them with the known
+   focal length, at each side in turn, and compared with a flat page fitted
+   to the same evidence. The page counts as bent when that clearly explains
+   the outline better (30% lower cost) and lifts at least 0.3% of its width;
+   the side facing a neighbouring page is preferred.
+5. **Warp** every full-resolution photo straight into the page rectangle (one
+   resampling step), at roughly the resolution the photos captured. A flat
+   page goes through one homography per photo, exactly as before; a bent one
+   through a flattening map (output pixel, page surface, reference photo,
+   photo) that keeps distances along the page true, with a smooth correction
+   per photo, from matched features, for the parallax a homography cannot
+   model in the bent strip.
+6. **Fuse.** Tone curves match every shot's exposure and colour to one of
    them. Where shots disagree, the darker one is favoured, because glare only
    ever adds light. The weights hand over gradually between shots instead of
    switching per pixel, and edges of partial shots are feathered, so seams
    blend.
 
-6. **Check what is left.** A glare detector looks at each shot on its own
+7. **Check what is left.** A glare detector looks at each shot on its own
    (whiter than its surroundings, washed-out colour, flattened texture,
    clipped highlights), combines that with the comparison between shots, and
    weights it by each shot's share of every composed pixel. What remains is
@@ -54,8 +68,10 @@ the whole page (to get rid of glare) or each show part of an oversized page
 
 Every page comes with its metadata, `PAGE.json` next to `PAGE.png` (or at
 `--report`): which photos were used or dropped, coverage, the colour
-correction, the glare and uncovered regions, and warnings (`glare`,
-`incomplete_coverage`, `photos_dropped`), each with a code and a message:
+correction, the glare and uncovered regions, whether the page was flattened
+(`curvature`: binding side, lift, profile, each photo's alignment, or why
+not), and warnings (`glare`, `incomplete_coverage`, `photos_dropped`,
+`steep_binding`, `curvature_uncorrected`), each with a code and a message:
 
 ```json
 {"code": "glare", "fraction": 0.0412, "regions": 1, "single_shot": 1, "location": "bottom-left",
@@ -75,13 +91,16 @@ painted over.
 ```sh
 cd backend
 python3 -m pip install -e '.[test]'
-albumproc page shot1.jpg shot2.jpg shot3.jpg -o page.png --debug debug/   # also writes page.json
+albumproc page shot1.jpg shot2.jpg shot3.jpg -o page.png --debug debug/   # also writes page.json; debug/ gets curvature_outline.jpg, _profile.png, _grid.jpg, align_NN.png
 albumproc page shot*.jpg -o page.png --masks     # also page.glare.png and page.uncovered.png
 albumproc glare shot1.jpg --overlay checked/     # glare in single photos, before processing a page
 albumproc glare-eval page.json --truth drawn.png # score page.glare.png against a hand-drawn mask
 albumproc synth samples/ --kind glare -n 4      # synthetic test photos (glare, stitch, pair or clean_white)
 albumproc synth samples/ --kind stitch -n 2 --glare-style sleeve   # long sleeve streaks instead of spots
 albumproc synth samples/ --kind pair --gap 0    # pages touching, as in an open album
+albumproc synth samples/ --kind curved --lift 0.03 --binding left -n 2   # a page bent near its binding
+albumproc page shot*.jpg -o page.png --curvature force --binding left   # always flatten, bent at the left (default: auto)
+albumproc straightness page.png --overlay lines.jpg   # how straight long lines are, to compare before and after
 python3 -m pytest
 ```
 
@@ -114,10 +133,15 @@ page order, with per-page overrides:
   "pages": [
     {"folder": "cover", "name": "Front cover", "page_size": "10.5x12.5in"},
     "page-01",
-    {"folder": "page-02", "rotate": 90, "fit": "fit"}
+    {"folder": "page-02", "rotate": 90, "fit": "fit"},
+    {"folder": "page-03", "curvature": "force", "binding": "left"}
   ]
 }
 ```
+
+`curvature` (`auto`, `off`, `force`) and `binding` (`auto`, `left`, `right`,
+`top`, `bottom`) override `--curvature` and `--binding` for one page; changing
+them reprocesses that page.
 
 Output:
 
@@ -311,8 +335,14 @@ it listens on another address without TLS. Either:
   page at the wrong size.
 - Pages are never rotated automatically; use `rotate` in `album.json`.
 - Photos are assumed to be sRGB, which is what phones produce in practice.
-- Pages are assumed flat. A page bulging near the album's spine will be
-  slightly distorted; that needs a curved-surface model.
+- Bent pages: the model handles a page bent across one side (the binding),
+  lifted towards or away from the camera, with or without its own outline
+  seen at the binding. It does not handle wavy or cockled paper, dog-eared
+  corners, sleeve wrinkles, content hidden in the gutter (a `steep_binding`
+  warning asks for another shot), or the darker shading near the binding.
+  On the five real sleeved pages the outline traces jump between the
+  sleeve's and the paper's edges, so `auto` keeps all five flat; see
+  `curvature` in the page metadata and `--debug`'s `curvature_*.jpg`.
 - Glare can only be removed where at least one shot sees that spot without it,
   so for oversized pages each region needs two shots from different angles.
 - Tested on synthetic photos and on five real sleeved album pages (two shots

@@ -4,7 +4,8 @@
 print images and a PDF, ``albumproc print`` turns one processed page into a
 print image, ``albumproc glare`` checks single photos for glare,
 ``albumproc glare-eval`` scores a page's glare map against a hand-drawn mask,
-and ``albumproc synth`` makes test photos.
+``albumproc straightness`` measures how straight long lines in a composed
+page are, and ``albumproc synth`` makes test photos.
 """
 
 from __future__ import annotations
@@ -37,6 +38,12 @@ def _write_image(path: Path, img) -> None:
     _write_atomic(path, buf.tobytes())
 
 
+def _curvature_params(a):
+    from .curvature import CurvatureParams
+
+    return CurvatureParams(mode=a.curvature, binding=a.binding)
+
+
 def _cmd_page(a) -> int:
     from .pipeline import PageOptions, process_page
     from .regions import QualityParams
@@ -52,6 +59,7 @@ def _cmd_page(a) -> int:
         max_side=a.max_side,
         focal_35mm=a.focal_35mm or None,
         quality=QualityParams(residual_threshold=a.glare_threshold, min_region_area=a.min_region),
+        curvature=_curvature_params(a),
     )
     res = process_page(images, opt, debug_dir=a.debug)
     a.output.parent.mkdir(parents=True, exist_ok=True)
@@ -132,10 +140,25 @@ def _cmd_glare_eval(a) -> int:
     return 0
 
 
+def _cmd_straightness(a) -> int:
+    from .straightness import measure, overlay
+
+    img = cv2.imread(str(a.image), cv2.IMREAD_COLOR)
+    if img is None:
+        print(f"cannot read {a.image}", file=sys.stderr)
+        return 2
+    result = measure(img, a.min_len)
+    if a.overlay:
+        a.overlay.parent.mkdir(parents=True, exist_ok=True)
+        _write_image(a.overlay, overlay(img, result))
+    print(json.dumps(result.to_dict(), indent=2))
+    return 0
+
+
 def _cmd_synth(a) -> int:
     from .synth import make_case
 
-    case = make_case(a.seed, a.kind, a.n, a.gap, glare_style=a.glare_style)
+    case = make_case(a.seed, a.kind, a.n, a.gap, glare_style=a.glare_style, lift=a.lift, strip=a.strip, binding=a.binding)
     a.outdir.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(a.outdir / "truth.png"), case.page)
     for i, img in enumerate(case.images):
@@ -188,7 +211,7 @@ def _cmd_album(a) -> int:
     from .pipeline import PageOptions
 
     opt = AlbumOptions(
-        page=PageOptions(max_side=a.max_side, focal_35mm=a.focal_35mm or None),
+        page=PageOptions(max_side=a.max_side, focal_35mm=a.focal_35mm or None, curvature=_curvature_params(a)),
         print=_print_options(a, a.format),
         page_size=a.page_size,
         strict=a.strict,
@@ -239,6 +262,10 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="albumproc")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
+    def curvature_args(q):
+        q.add_argument("--curvature", choices=["auto", "off", "force"], default="auto", help="flatten pages bent near their binding: when they look bent (auto), never, or always")
+        q.add_argument("--binding", choices=["auto", "left", "right", "top", "bottom"], default="auto", help="the page side nearest the album's spine (default: found from the photos)")
+
     p = sub.add_parser("page", help="merge several photos of one page into a clean page image")
     p.add_argument("photos", nargs="+", type=Path)
     p.add_argument("-o", "--output", type=Path, required=True)
@@ -249,6 +276,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--min-region", type=float, default=0.0005, help="smallest region reported, as a fraction of the page")
     p.add_argument("--max-side", type=int, default=8000, help="cap on output long side (px)")
     p.add_argument("--focal-35mm", type=float, default=26.0, help="35 mm-equivalent focal length of the camera (0 = estimate)")
+    curvature_args(p)
     p.set_defaults(func=_cmd_page)
 
     def print_args(q, page_size_required: bool):
@@ -270,6 +298,7 @@ def main(argv: list[str] | None = None) -> int:
     al.add_argument("--force", action="store_true", help="reprocess every page even if unchanged")
     al.add_argument("--jobs", type=int, default=1, help="pages processed in parallel")
     al.add_argument("--debug", action="store_true", help="write intermediate images under OUTPUT/debug/")
+    curvature_args(al)
     al.set_defaults(func=_cmd_album)
 
     pr = sub.add_parser("print", help="turn one processed page image into a print image")
@@ -292,13 +321,22 @@ def main(argv: list[str] | None = None) -> int:
     ge.add_argument("--masks-dir", type=Path, help="where PAGE.glare.png is (default: next to the metadata)")
     ge.set_defaults(func=_cmd_glare_eval)
 
+    st = sub.add_parser("straightness", help="measure how straight long lines in a composed page are")
+    st.add_argument("image", type=Path)
+    st.add_argument("--min-len", type=float, default=0.1, help="shortest line measured, fraction of the page's long side")
+    st.add_argument("--overlay", type=Path, help="write the page with each line drawn, coloured by its deviation, here")
+    st.set_defaults(func=_cmd_straightness)
+
     s = sub.add_parser("synth", help="generate synthetic test photos of a page")
     s.add_argument("outdir", type=Path)
-    s.add_argument("--kind", choices=["glare", "stitch", "pair", "clean_white"], default="glare")
+    s.add_argument("--kind", choices=["glare", "stitch", "pair", "clean_white", "curved", "curved_stitch"], default="glare")
     s.add_argument("--seed", type=int, default=1)
     s.add_argument("-n", type=int, default=4)
     s.add_argument("--gap", type=float, default=0.03, help="pair: table between the pages, fraction of page width (0 = touching)")
     s.add_argument("--glare-style", choices=["spot", "sleeve"], default="spot")
+    s.add_argument("--lift", type=float, default=0.03, help="curved: rise at the binding, fraction of the page across it")
+    s.add_argument("--strip", type=float, default=0.12, help="curved: width of the bent strip, fraction of the page across the binding")
+    s.add_argument("--binding", choices=["left", "right", "top", "bottom"], default="left", help="curved: the side the page bends at")
     s.set_defaults(func=_cmd_synth)
 
     a = ap.parse_args(argv)
