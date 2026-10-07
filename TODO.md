@@ -100,6 +100,11 @@ checked.
 - [ ] **README still says the server does not exist** (`README.md:260-261`),
   contradicting its own status table. The status table on `main` also says
   "not started".
+- [ ] **Run `make serve` from the local `.venv`.** The `serve` target
+  (`Makefile:24-27`) expects `albumserver` already on the `PATH` and only
+  tells the user to `pip install -e backend`. Make it depend on a target that
+  creates `.venv` and installs the backend into it, then run
+  `.venv/bin/albumserver serve`.
 - [ ] **Promote a page that changed during its run** (R8.2, minor). Next-page
   promotion (`store.py:283-287`) only moves pages in `changed`. A page that
   was `processing` and got a new shot returns to `changed` at run end
