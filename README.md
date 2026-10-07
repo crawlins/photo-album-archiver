@@ -167,8 +167,27 @@ and uploads the shots to the server. All image work happens on the backend.
 
 ### Build and install
 
-Needs JDK 17 or later (a full JDK, with `jlink`) and the Android SDK
-(platform 37).
+Every build of `main` publishes the app on the
+[android-latest](https://github.com/crawlins/photo-album-archiver/releases/tag/android-latest)
+pre-release: open that page on the phone and tap `album-archiver.apk` (allow
+installs from the browser when asked). Each pull request's build also keeps
+the APK as the `album-archiver-apk` workflow artifact.
+
+To build it yourself you need JDK 17 or later (a full JDK, with `jlink`) and
+the Android SDK (platform 37). From the repository root:
+
+```sh
+make apk                                # android/app/build/outputs/apk/debug/app-debug.apk
+make install-apk                        # build, install over USB (keeps the app's data) and start it
+```
+
+`install-apk` needs `adb` (the SDK's platform-tools) on `PATH` and the phone
+plugged in with USB debugging on (Settings > About phone, tap Build number
+seven times, then Developer options > USB debugging). Debug builds are all
+signed with `android/app/debug.keystore`, so a newer APK, from CI or a local
+build, installs over an older one.
+
+The Gradle tasks directly:
 
 ```sh
 cd android
@@ -220,6 +239,7 @@ cd backend
 python3 -m pip install -e .
 albumserver token create pixel-8        # prints the phone's token, once
 albumserver serve                       # http://127.0.0.1:8080, data in ~/.local/share/albumserver
+make serve                              # the same on every interface, for a phone on the Wi-Fi (PORT=8080)
 ```
 
 Enter the server's URL and the token in the app's settings. Each phone gets
