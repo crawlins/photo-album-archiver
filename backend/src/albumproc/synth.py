@@ -5,6 +5,11 @@ pinhole camera looks at it from varied angles, so perspective is physically
 correct, and each shot gets its own glare spots, exposure, noise and JPEG
 compression. The page image itself is kept as ground truth.
 
+Curved pages (``kind="curved"``) are bent near one side, as an album page
+lifts off the table next to its binding: the page is cut into thin strips
+parallel to the binding, each placed in 3D along the bend and drawn on its
+own, farthest first.
+
 Glare comes in two styles: ``spot`` (soft, flat-topped reflections of a lamp)
 and ``sleeve`` (long, thin, wavy streaks with a clipped core inside a soft
 veil, as a crinkled plastic sleeve reflects a ceiling light).
@@ -62,19 +67,28 @@ def _print_photo(rng: np.random.Generator, w: int, h: int) -> np.ndarray:
     return np.clip(img, 0, 255).astype(np.uint8)
 
 
-def make_page(rng: np.random.Generator, w: int = 2200, h: int = 1700) -> np.ndarray:
+def make_page(rng: np.random.Generator, w: int = 2200, h: int = 1700, margin: float | None = None) -> np.ndarray:
+    """A cream page with a 2x2 grid of prints, each captioned.
+
+    ``margin`` is the paper left around and between the prints, as a
+    fraction of the width, with the prints as wide as they fit; by default
+    the margins are 6% of the width and 7% of the height, and the prints
+    vary in width.
+    """
     paper = np.array([215, 230, 238], np.float32)  # cream, BGR
     page = np.empty((h, w, 3), np.float32)
     page[:] = paper
     page += cv2.GaussianBlur(rng.normal(0, 1, (h, w)).astype(np.float32), (0, 0), 3)[..., None] * 6
     page = np.clip(page, 0, 255).astype(np.uint8)
     # 2x2 grid of prints with white borders and a caption under each.
-    mx, my = int(w * 0.06), int(h * 0.07)
+    mx, my = (int(w * 0.06), int(h * 0.07)) if margin is None else (int(w * margin), int(w * margin))
     cw, ch = (w - 3 * mx) // 2, (h - 3 * my) // 2
     for r in range(2):
         for c in range(2):
             x, y = mx + c * (cw + mx), my + r * (ch + my)
             pw, ph = int(cw * rng.uniform(0.75, 0.95)), int(ch * rng.uniform(0.7, 0.85))
+            if margin is not None:  # prints as wide as their cell, so they reach the margin
+                pw = cw - 2 * max(6, cw // 40)
             px, py = x + (cw - pw) // 2, y
             b = max(6, pw // 40)
             page[py - b : py + ph + b, px - b : px + pw + b] = (245, 248, 250)
@@ -96,8 +110,12 @@ def make_table(rng: np.random.Generator, w: int, h: int) -> np.ndarray:
     return np.clip(img, 0, 255).astype(np.uint8)
 
 
-def _look_at_homography(target_xy, dist, tilt_deg, tilt_dir_deg, roll_deg, f, img_size):
-    """Homography from scene plane (z=0, units = scene px) to image pixels."""
+def _look_at_camera(target_xy, dist, tilt_deg, tilt_dir_deg, roll_deg, f, img_size):
+    """Pinhole camera looking at a point of the scene plane: (K, R, C).
+
+    ``R``'s rows are the camera axes in scene coordinates and ``C`` is the
+    camera centre; a scene point X projects to K @ R @ (X - C).
+    """
     tilt, tdir, roll = np.radians([tilt_deg, tilt_dir_deg, roll_deg])
     target = np.array([target_xy[0], target_xy[1], 0.0])
     # Camera sits above the plane (negative z looks down onto it), offset by tilt.
@@ -114,8 +132,18 @@ def _look_at_homography(target_xy, dist, tilt_deg, tilt_dir_deg, roll_deg, f, im
     R = np.array([[cr, -sr, 0], [sr, cr, 0], [0, 0, 1]]) @ R0
     w, h = img_size
     K = np.array([[f, 0, w / 2], [0, f, h / 2], [0, 0, 1]])
+    return K, R, C
+
+
+def _plane_homography(K, R, C) -> np.ndarray:
+    """Homography from the scene plane (z=0, units = scene px) to image pixels."""
     H = K @ np.column_stack([R[:, 0], R[:, 1], -R @ C])
     return H / H[2, 2]
+
+
+def _look_at_homography(target_xy, dist, tilt_deg, tilt_dir_deg, roll_deg, f, img_size):
+    """Homography from scene plane (z=0, units = scene px) to image pixels."""
+    return _plane_homography(*_look_at_camera(target_xy, dist, tilt_deg, tilt_dir_deg, roll_deg, f, img_size))
 
 
 def _add_glare(rng, img, page_poly) -> tuple[np.ndarray, np.ndarray]:
@@ -177,12 +205,15 @@ def make_shots(
     img_size=(2000, 1500),
     glare: bool = True,
     glare_style: str = "spot",
+    render=None,
 ) -> list[SynthShot]:
     """Photograph ``scene``; each target is a point in page-relative coords (0..1).
 
     ``fill`` is the fraction of the image width that the page's width spans;
     above 1 each shot only sees part of the page. ``glare_style`` is ``spot``
-    or ``sleeve``.
+    or ``sleeve``. ``render(K, R, C, img_size, interp)``, when given, draws
+    the shot instead of warping the flat ``scene`` and returns the image and
+    the page's outline in it.
     """
     if glare_style not in ("spot", "sleeve"):
         raise ValueError(glare_style)
@@ -192,7 +223,7 @@ def make_shots(
     shots = []
     for tx, ty in targets:
         dist = f * pw / (fill * w)
-        H = _look_at_homography(
+        K, R, C = _look_at_camera(
             (px + tx * pw, py + ty * ph),
             dist,
             tilt_deg=rng.uniform(5, 22),
@@ -201,8 +232,13 @@ def make_shots(
             f=f,
             img_size=img_size,
         )
-        img = cv2.warpPerspective(scene, H, img_size, flags=cv2.INTER_AREA if fill < 1 else cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
-        page_poly = cv2.perspectiveTransform(np.float32([[px, py], [px + pw, py], [px + pw, py + ph], [px, py + ph]]).reshape(-1, 1, 2), H).reshape(4, 2)
+        H = _plane_homography(K, R, C)
+        interp = cv2.INTER_AREA if fill < 1 else cv2.INTER_LINEAR
+        if render is not None:
+            img, page_poly = render(K, R, C, img_size, interp)
+        else:
+            img = cv2.warpPerspective(scene, H, img_size, flags=interp, borderMode=cv2.BORDER_REFLECT)
+            page_poly = cv2.perspectiveTransform(np.float32([[px, py], [px + pw, py], [px + pw, py + ph], [px, py + ph]]).reshape(-1, 1, 2), H).reshape(4, 2)
         page_poly = np.clip(page_poly, 0, [w - 1, h - 1])
         gmask = np.zeros((h, w), bool)
         if glare and glare_style == "sleeve":
@@ -250,6 +286,99 @@ def make_clean_white_page(rng: np.random.Generator, w: int = 2200, h: int = 1700
     return np.clip(page, 0, 255).astype(np.uint8)
 
 
+BINDINGS = ("left", "right", "top", "bottom")
+
+
+def _bend(across: float, lift: float, strip: float, n: int = 400) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """A page bent near its binding, cut into ``n`` strips parallel to it.
+
+    The page rises to ``lift * across`` at the binding along the quadratic
+    ``lift * across * (1 - x / (strip * across)) ** 2`` over the first
+    ``strip`` of its footprint ``x`` (measured from the binding, which stays
+    put) and lies flat beyond. Returns, for the strip edges, their distance
+    from the binding along the page (page px), and their footprint and height
+    in the scene.
+    """
+    xs = np.linspace(0.0, across, 20001)
+    s = max(strip * across, 1e-9)
+    slope = np.where(xs < s, -2 * lift * across / s * (1 - xs / s), 0.0)
+    height = np.where(xs < s, lift * across * (1 - xs / s) ** 2, 0.0)
+    arc = np.concatenate([[0.0], np.cumsum(np.hypot(np.diff(xs), np.diff(xs) * (slope[1:] + slope[:-1]) / 2))])
+    u = np.linspace(0.0, across, n + 1)
+    foot = np.interp(u, arc, xs)  # the page is shorter than its footprint's span only where it bends
+    return u, foot, np.interp(foot, xs, height)
+
+
+def _curved_renderer(page: np.ndarray, table: np.ndarray, origin: tuple[int, int], binding: str, lift: float, strip: float):
+    """``make_shots`` renderer for ``page`` bent near ``binding`` on ``table``."""
+    if binding not in BINDINGS:
+        raise ValueError(binding)
+    ph, pw = page.shape[:2]
+    ox, oy = origin
+    across = pw if binding in ("left", "right") else ph
+    u, foot, height = _bend(across, lift, strip)
+    # Neighbouring strips that both lie flat are one plane: draw them as one.
+    keep = [0] + [k for k in range(1, len(u) - 1) if height[k] != 0 or height[k - 1] != 0] + [len(u) - 1]
+    u, foot, height = u[keep], foot[keep], height[keep]
+
+    def scene_xyz(a, b, z):
+        """Scene point at footprint ``a`` from the binding and ``b`` along it, ``z`` towards the camera."""
+        if binding == "left":
+            x, y = ox + a, oy + b
+        elif binding == "right":
+            x, y = ox + pw - a, oy + b
+        elif binding == "top":
+            x, y = ox + b, oy + a
+        else:
+            x, y = ox + b, oy + ph - a
+        return np.array([x, y, -z])  # the camera looks down from negative z
+
+    def page_xy(a, b):
+        """Page pixel at ``a`` along the page from the binding and ``b`` along it."""
+        return {"left": (a, b), "right": (pw - a, b), "top": (b, a), "bottom": (b, ph - a)}[binding]
+
+    along = ph if binding in ("left", "right") else pw
+
+    def render(K, R, C, img_size, interp):
+        w, h = img_size
+        img = cv2.warpPerspective(table, _plane_homography(K, R, C), img_size, flags=interp, borderMode=cv2.BORDER_REFLECT)
+
+        def project(X):
+            c = R @ (X - C)
+            q = K @ c
+            return q[:2] / q[2], c[2]
+
+        strips = []
+        for k in range(len(u) - 1):
+            src, dst, depth = [], [], 0.0
+            for a, b, z, uu in ((foot[k], 0, height[k], u[k]), (foot[k + 1], 0, height[k + 1], u[k + 1]), (foot[k + 1], along, height[k + 1], u[k + 1]), (foot[k], along, height[k], u[k])):
+                q, d = project(scene_xyz(a, b, z))
+                src.append(page_xy(uu, b))
+                dst.append(q)
+                depth += d
+            strips.append((depth, np.float32(src), np.float32(dst)))
+        for _, src, dst in sorted(strips, key=lambda t: -t[0]):  # farthest first, nearer ones drawn over them
+            x0, y0 = np.floor(dst.min(axis=0)).astype(int) - 2
+            x1, y1 = np.ceil(dst.max(axis=0)).astype(int) + 2
+            x0, y0, x1, y1 = max(x0, 0), max(y0, 0), min(x1, w), min(y1, h)
+            if x1 <= x0 or y1 <= y0:
+                continue
+            Hs = np.array([[1, 0, -x0], [0, 1, -y0], [0, 0, 1]], np.float64) @ cv2.getPerspectiveTransform(src, dst)
+            patch = cv2.warpPerspective(page, Hs, (x1 - x0, y1 - y0), flags=interp, borderMode=cv2.BORDER_REPLICATE)
+            mask = np.zeros((y1 - y0, x1 - x0), np.uint8)
+            poly = np.round((dst - [x0, y0]) * 16).astype(np.int32)
+            cv2.fillConvexPoly(mask, poly, 1, cv2.LINE_8, 4)
+            # Strips overlap by a pixel so no seam of table shows between them.
+            mask = cv2.dilate(mask, np.ones((2, 2), np.uint8)) if len(strips) > 1 else mask
+            roi = img[y0:y1, x0:x1]
+            roi[mask > 0] = patch[mask > 0]
+        corners = [scene_xyz(foot[0], 0, height[0]), scene_xyz(foot[-1], 0, height[-1]), scene_xyz(foot[-1], along, height[-1]), scene_xyz(foot[0], along, height[0])]
+        poly = np.array([project(X)[0] for X in corners], np.float32)
+        return img, poly
+
+    return render
+
+
 def make_case(
     seed: int,
     kind: str = "glare",
@@ -258,6 +387,9 @@ def make_case(
     sides: int = 1,
     wide: bool = True,
     glare_style: str = "spot",
+    lift: float = 0.03,
+    strip: float = 0.12,
+    binding: str = "left",
 ) -> SynthPage:
     """Build a test case.
 
@@ -274,8 +406,17 @@ def make_case(
     width; at 0 they touch, as in an open album, and only a thin shadow marks
     the join.
     ``glare_style`` is ``spot`` or ``sleeve`` (see ``make_shots``).
+    kind="curved": n full-page shots of a page bent near its ``binding``
+    side, rising to ``lift`` (a fraction of the page's size across the
+    binding) over the ``strip`` of the page next to it (see ``_bend``); a
+    negative ``lift`` bends it away from the camera, into the gutter.
+    kind="curved_stitch": an oversized page, bent the same way, shot in two
+    overlapping halves side by side across the binding: one half holds the
+    bent strip, the other the far side of the page.
     """
     rng = np.random.default_rng(seed)
+    if kind in ("curved", "curved_stitch"):
+        return _curved_case(rng, kind, n, glare_style, lift, strip, binding)
     if kind == "stitch" and n >= 4:
         page = make_page(rng, 3200, 2200)
     elif kind == "stitch":
@@ -336,4 +477,34 @@ def make_case(
         shots = make_shots(rng, scene, rect, targets, fill=fill, glare_style=glare_style)
     else:
         raise ValueError(kind)
+    return SynthPage(page, scene, (margin, margin), shots)
+
+
+def _curved_case(rng, kind: str, n: int, glare_style: str, lift: float, strip: float, binding: str) -> SynthPage:
+    if binding not in BINDINGS:
+        raise ValueError(binding)
+    stitch = kind == "curved_stitch"
+    # Narrow margins, so that prints reach well into the bent strip, where
+    # the bend shows in them.
+    if stitch and binding in ("left", "right"):
+        page = make_page(rng, 4000, 2000, margin=0.015)  # wide: halves side by side
+    elif stitch:
+        page = make_page(rng, 2200, 3000, margin=0.015)  # tall: halves above and below each other
+    else:
+        page = make_page(rng, margin=0.02)
+    ph, pw = page.shape[:2]
+    margin = int(0.6 * max(pw, ph))
+    table = make_table(rng, pw + 2 * margin, ph + 2 * margin)
+    scene = table.copy()
+    scene[margin : margin + ph, margin : margin + pw] = page
+    rect = (margin, margin, pw, ph)
+    render = _curved_renderer(page, table, (margin, margin), binding, lift, strip)
+    if stitch and binding in ("left", "right"):
+        targets, fill = [(0.3, 0.5), (0.7, 0.5)], 1.2
+    elif stitch:
+        targets, fill = [(0.5, 0.32), (0.5, 0.68)], 0.85
+    else:
+        targets, fill = [(0.5, 0.5)] * max(1, n), 0.72
+    targets = [(x + rng.uniform(-0.03, 0.03), y + rng.uniform(-0.03, 0.03)) for x, y in targets]
+    shots = make_shots(rng, scene, rect, targets, fill=fill, glare_style=glare_style, render=render)
     return SynthPage(page, scene, (margin, margin), shots)

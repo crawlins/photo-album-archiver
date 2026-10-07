@@ -35,6 +35,9 @@ class Registration:
     work_homographies: list[np.ndarray | None]
     work_scales: list[float]
     pair_inliers: dict[tuple[int, int], int] = field(default_factory=dict)
+    # Registered photos in the order the spanning tree placed them, the
+    # reference first: each one after it overlaps one placed before it.
+    tree_order: list[int] = field(default_factory=list)
 
     @property
     def registered(self) -> list[int]:
@@ -120,6 +123,7 @@ def register(images: list[np.ndarray]) -> Registration:
     work_H: list[np.ndarray | None] = [None] * n
     work_H[ref] = np.eye(3)
     placed = {ref}
+    tree_order = [ref]
     while True:
         best = None
         for (a, b), k in inliers.items():
@@ -130,6 +134,7 @@ def register(images: list[np.ndarray]) -> Registration:
         a, b, _ = best
         work_H[a] = work_H[b] @ H_pair[(a, b)]
         placed.add(a)
+        tree_order.append(a)
 
     full_H: list[np.ndarray | None] = []
     s_ref = feats[ref].scale
@@ -141,4 +146,4 @@ def register(images: list[np.ndarray]) -> Registration:
         full_H.append(H / H[2, 2])
 
     pairs = {k: v for k, v in inliers.items() if k[0] < k[1]}
-    return Registration(ref, full_H, work_H, [f.scale for f in feats], pairs)
+    return Registration(ref, full_H, work_H, [f.scale for f in feats], pairs, tree_order)

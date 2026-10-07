@@ -132,16 +132,19 @@ Nothing is implemented; every task (1.1 to 7) is open. Blocked on PR #1.
 - Server and app support is future work: PR #9 already passes page warnings
   through from `report.json` (`worker.py:227-238`), and the app shows none.
 
-## Page curvature (`page-curvature`, spec in draft PR #8)
+## Page curvature (`page-curvature`, implemented)
 
-Nothing is implemented; every task (1.1 to 7) is open. Blocked on PR #1.
+Tasks 1 to 7 are implemented. The neighbouring page's side is found from the
+page candidates (`pipeline._neighbour_side`). Open:
 
-- [ ] **Merge PR #1 first.** Both change `page.py` and `pipeline.py`. PR #1
-  has never run the test workflow because it predates it; rebase it on `main`
-  so CI runs.
-- [ ] **Record which side the neighbouring page is on.** The design's
-  `fit_page(..., neighbour_side=...)` (`design.md:142`) assumes PR #1 records
-  it, but PR #1's `_choose_page` (`pipeline.py:161`) returns only the winning
-  `PageQuad` and discards the others. Add this to PR #1 or as a task in the
-  spec.
-- [ ] **Rebase PR #8 on `main`**; it is one commit behind.
+- [ ] **Real pages are not flattened.** On the five real sleeved pages the
+  traced outline jumps between the sleeve's and the paper's edges, so `auto`
+  treats all five as flat (`small_gain` on four, `fit_failed` on one), and
+  `force` picks a wrong binding side on two. Tracing the paper's own edge
+  inside the sleeve is the next step.
+- [ ] **Strip MAE on two-shot pages** (R8.5): 1.4 times the rest of the page
+  on the synthetic two-shot case, not 1.2.
+- [ ] **Lift accuracy at 0.5%** (design test plan): within 30% on the
+  rendered outlines, not 10%; 2% and 5% are within 10%.
+- [ ] **Flat path error on top-binding synthetic pages** (R8.3) stays under
+  0.3% of the width at 3% and 5% lifts; the test checks left bindings.
