@@ -1,4 +1,4 @@
-"""The HTTP API: the capture app's ten requests plus processing status and results.
+"""The HTTP API: the capture app's requests plus processing status and results.
 
 Request and response bodies are the JSON shapes in the Android app spec
 (``.kiro/specs/android-app/design.md``, "Server contract"). Every error body
@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import errno
 import logging
+import os
 import re
 import time
 import uuid
@@ -27,7 +28,7 @@ from albumproc.printsize import parse_page_size
 from . import __version__
 from .auth import Authenticator
 from .config import Settings
-from .files import Layout, TooLarge, Upload, remove_tree
+from .files import Layout, TooLarge, Upload, fsync_dir, remove_tree
 from .store import Conflict, Invalid, LimitExceeded, Store, iso, utcnow
 from .thumbs import exif_taken, is_jpeg, make_thumb
 
@@ -113,6 +114,28 @@ class AlbumIn(BaseModel):
         except ValueError:
             raise ValueError(f"{v!r} is not an ISO 8601 time") from None
         return v
+
+
+class MoveIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    shots: list[StrictStr]
+
+    @field_validator("shots")
+    @classmethod
+    def _shots(cls, v: list[str]) -> list[str]:
+        if not 1 <= len(v) <= 25:
+            raise ValueError("must list 1 to 25 shot ids")
+        out = []
+        for i, s in enumerate(v):
+            try:
+                out.append(_id(s, "shot"))
+            except ApiError as e:
+                raise ValueError(f"[{i}]: {e.message}") from None
+        if len(set(out)) != len(out):
+            dup = next(s for s in out if out.count(s) > 1)
+            raise ValueError(f"shot {dup} is listed twice")
+        return out
 
 
 def _validation_message(e: ValidationError | RequestValidationError) -> str:
@@ -281,6 +304,42 @@ def create_app(settings: Settings, store: Store | None = None, clock: Callable[[
                 layout.thumb(aid, sid).unlink(missing_ok=True)
             remove_tree(layout.outputs(aid, pid))
             remove_tree(layout.work(aid, pid))
+        return Response(status_code=204)
+
+    @app.post(f"{api}/albums/{{album_id}}/pages/{{page_id}}/move", status_code=204)
+    async def move_shots(album_id: str, page_id: str, request: Request):
+        aid, pid = _id(album_id, "album"), _id(page_id, "page")
+        try:
+            body = MoveIn.model_validate_json(await request.body())
+        except ValidationError as e:
+            raise ApiError(400, "bad_request", _validation_message(e)) from None
+
+        def link(moves: list[tuple[str, str]]) -> None:
+            # A second name for each file in the new page's folder; the old
+            # name goes once the move is committed.
+            dest = layout.photos(aid, pid)
+            dest.mkdir(parents=True, exist_ok=True)
+            for sid, src in moves:
+                try:
+                    os.link(layout.photo(aid, src, sid), layout.photo(aid, pid, sid))
+                except FileExistsError:
+                    pass  # left by a move that crashed before its commit
+                except FileNotFoundError:
+                    log.warning("moving shot %s whose photo is missing", sid)
+            fsync_dir(dest)
+
+        try:
+            moved = await run_in_threadpool(store.move_shots, aid, pid, body.shots, link)
+        except Conflict as e:
+            raise ApiError(409, "conflict", str(e)) from None
+        except LimitExceeded as e:
+            raise ApiError(422, e.limit, str(e)) from None
+        if moved is None:
+            raise not_found("album")
+        for sid, src in moved.moves:
+            layout.photo(aid, src, sid).unlink(missing_ok=True)
+        for src in moved.emptied:
+            remove_tree(layout.outputs(aid, src))
         return Response(status_code=204)
 
     # -- shots ------------------------------------------------------------

@@ -127,6 +127,16 @@ class Removed:
     outputs_dropped: bool = False
 
 
+@dataclass
+class Moved:
+    """What a move changed, so the caller can remove the old file names."""
+
+    album_id: str
+    page_id: str
+    moves: list[tuple[str, str]]  # (shot id, page it left)
+    emptied: list[str]  # pages the move left without shots
+
+
 class Store:
     def __init__(self, path: str | Path, clock: Callable[[], datetime] = utcnow, max_pages: int = 500, max_shots: int = 25):
         self.path = Path(path)
@@ -391,6 +401,63 @@ class Store:
                 c.execute("UPDATE page SET output = NULL, print_path = NULL, warnings = NULL, last_error = NULL WHERE id = ?", (page_id,))
                 c.execute("UPDATE album SET pdf_stale = 1 WHERE id = ?", (album_id,))
         return Removed(album_id, [], [shot_id], outputs_dropped=empty)
+
+    def move_shots(self, album_id: str, page_id: str, shot_ids: list[str], link: Callable[[list[tuple[str, str]]], None]) -> Moved | None:
+        """Move the listed shots of the album to ``page_id``; None when the album is unknown.
+
+        Shots already on the page or not in the album are skipped, so a
+        repeated move changes nothing. An unknown page is created at the end
+        of the album, as for a shot upload. ``link`` gets ``(shot id, page it
+        is leaving)`` for every shot that moves and gives each file a name in
+        the new page's folder. It runs inside the transaction after every
+        check has passed, so a crash leaves either the old rows with an extra
+        name per file, or the new rows with an extra name; startup cleanup
+        removes the name the index does not use.
+        """
+        now = self.now()
+        with self._write() as c:
+            if c.execute("SELECT 1 FROM album WHERE id = ?", (album_id,)).fetchone() is None:
+                return None
+            p = c.execute("SELECT album_id FROM page WHERE id = ?", (page_id,)).fetchone()
+            if p is not None and p["album_id"] != album_id:
+                raise Conflict(f"page {page_id} belongs to another album")
+            if p is None:
+                n, last = c.execute("SELECT COUNT(*), COALESCE(MAX(position), 0) FROM page WHERE album_id = ?", (album_id,)).fetchone()
+                if n >= self.max_pages:
+                    raise LimitExceeded("max_pages", f"the album already has {self.max_pages} pages, the most allowed")
+                c.execute("INSERT INTO page (id, album_id, position) VALUES (?, ?, ?)", (page_id, album_id, last + 1))
+            marks = ",".join("?" * len(shot_ids))
+            rows = c.execute(
+                f"""SELECT s.id, s.page_id FROM shot s JOIN page p ON s.page_id = p.id
+                    WHERE p.album_id = ? AND s.page_id != ? AND s.id IN ({marks})""",
+                (album_id, page_id, *shot_ids),
+            ).fetchall()
+            moves = [(r["id"], r["page_id"]) for r in rows]
+            if not moves:
+                return Moved(album_id, page_id, [], [])
+            n = c.execute("SELECT COUNT(*) FROM shot WHERE page_id = ?", (page_id,)).fetchone()[0]
+            if n + len(moves) > self.max_shots:
+                raise LimitExceeded(
+                    "max_shots", f"the page has {n} shots; moving {len(moves)} more would exceed {self.max_shots}, the most allowed"
+                )
+            link(moves)
+            c.execute(f"UPDATE shot SET page_id = ? WHERE id IN ({','.join('?' * len(moves))})", (page_id, *(sid for sid, _ in moves)))
+            sources = sorted({src for _, src in moves})
+            for pid in [*sources, page_id]:
+                self._page_changed(c, pid, now)
+            c.execute("UPDATE page SET first_shot = COALESCE(first_shot, ?) WHERE id = ?", (now, page_id))
+            # The user split the album at the first moved shot, so a page shots
+            # were moved off is complete and can run now, as a page is when the
+            # page after it appears (see ``put_album``).
+            for pid in sources:
+                c.execute(f"UPDATE page SET state = 'ready', ready_at = ? WHERE id = ? AND state = 'changed' AND {_HAS_SHOTS}", (now, pid))
+                c.execute(f"UPDATE page SET ready_at = ? WHERE id = ? AND state = 'processing' AND {_HAS_SHOTS}", (now, pid))
+            emptied = [pid for pid in sources if c.execute("SELECT 1 FROM shot WHERE page_id = ?", (pid,)).fetchone() is None]
+            for pid in emptied:
+                # As when a page's last shot is deleted: nothing is left to process.
+                c.execute("UPDATE page SET output = NULL, print_path = NULL, warnings = NULL, last_error = NULL WHERE id = ?", (pid,))
+            c.execute("UPDATE album SET updated = ?, pdf_stale = CASE WHEN ? THEN 1 ELSE pdf_stale END WHERE id = ?", (now, bool(emptied), album_id))
+        return Moved(album_id, page_id, moves, emptied)
 
     @staticmethod
     def _page_changed(c: sqlite3.Connection, page_id: str, now: str) -> None:
