@@ -132,8 +132,9 @@ class ShotActionsViewModelTest {
         val menu = vm.shotActions.openMenuFor("p1s3")
         assertThat(menu.moveLabel).isEqualTo("Move this photo and the 1 after it to a new page 2")
         vm.shotAction(ShotAction.MOVE_TO_NEXT_PAGE)
-        val s = vm.state.await { it.pageNumber == 2 && it.shots.size == 2 }
-        assertThat(s.shots.map { it.id }).containsExactly("p1s3", "p1s4").inOrder()
+        // The source page is left with 2 shots as well, so wait for the moved ones, not a count.
+        val s = vm.state.await { it.pageNumber == 2 && it.shots.map { shot -> shot.id } == listOf("p1s3", "p1s4") }
+        assertThat(s.page?.id).isNotEqualTo(pageIds[0])
         val event = withTimeout(5000) { vm.events.first { it is CaptureEvent.Message } } as CaptureEvent.Message
         assertThat(event.text).isEqualTo("Moved 2 photos to page 2")
         assertThat(vm.shotActions.selected.value).isNull()
@@ -171,7 +172,8 @@ class ShotActionsViewModelTest {
         val pos = vm.position.await { it?.pageId != pageIds[0] }!!
         val newPage = env.repo.pages(albumId)[1]
         assertThat(pos).isEqualTo(Slot(newPage.id, 0))
-        assertThat(vm.shots.await { it.size == 2 }.map { it.id }).containsExactly("p1s3", "p1s4").inOrder()
+        // The source page is left with 2 shots as well, so wait for the moved ones, not a count.
+        vm.shots.await { it.map { shot -> shot.id } == listOf("p1s3", "p1s4") }
         assertThat(env.repo.pages(albumId).map { it.position to it.shotCount }).containsExactly(1 to 2, 2 to 2, 3 to 1).inOrder()
         assertThat(withTimeout(5000) { vm.messages.first() }).isEqualTo("Made page 2 from 2 photos")
     }
