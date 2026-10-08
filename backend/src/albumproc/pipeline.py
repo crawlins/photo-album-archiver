@@ -11,7 +11,7 @@ import numpy as np
 from .align import ShotAlignment, align_shots, apply_field
 from .curvature import CurvatureFit, CurvatureParams, PageSurface, fit_page, flatten_maps, output_size, upsample_map, view_angles
 from .fuse import WEIGHT_MAX_SIDE, FuseParams, fuse
-from .glare import GlareParams, adapt_bias, combine, glare_features, glare_map, residual
+from .glare import GlareParams, adapt_bias, combine, glare_features, glare_map, net_map, residual, weak_threshold
 from .page import PageQuad, detect_pages, estimate_aspect, focal_px_from_35mm
 from .regions import QualityParams, glare_regions, page_warnings, uncovered_regions
 from .register import register
@@ -364,10 +364,13 @@ def _assess(result, used: list[int], dropped: list[int], size: tuple[int, int], 
     count = np.sum([m.astype(np.uint8) for m in masks], axis=0)
     bias, adapted, maps = gp.bias, False, [None] * len(used)
     if gp.enabled:
-        feats = [glare_features(t, m, s, gp) for t, m, s in zip(result.toned_small, masks, result.small)]
-        bias, adapted = adapt_bias(feats, result.excess_small, masks, gp, opt.fuse.glare_flag)
-        maps = [glare_map(f, m, gp, bias) for f, m in zip(feats, masks)]
-        per = [combine(g, ex, opt.fuse.glare_flag, gp.weak) for g, ex in zip(maps, result.excess_small)]
+        if gp.detector == "net":
+            maps = [net_map(s, m, gp) for s, m in zip(result.small, masks)]
+        else:
+            feats = [glare_features(t, m, s, gp) for t, m, s in zip(result.toned_small, masks, result.small)]
+            bias, adapted = adapt_bias(feats, result.excess_small, masks, gp, opt.fuse.glare_flag)
+            maps = [glare_map(f, m, gp, bias) for f, m in zip(feats, masks)]
+        per = [combine(g, ex, opt.fuse.glare_flag, weak_threshold(gp)) for g, ex in zip(maps, result.excess_small)]
         res = residual(per, result.weights_small)
     else:
         per = [np.zeros(grid, np.float32) for _ in used]

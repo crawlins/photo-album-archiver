@@ -45,6 +45,7 @@ def _curvature_params(a):
 
 
 def _cmd_page(a) -> int:
+    from .glare import GlareParams
     from .pipeline import PageOptions, process_page
     from .regions import QualityParams
 
@@ -58,6 +59,7 @@ def _cmd_page(a) -> int:
     opt = PageOptions(
         max_side=a.max_side,
         focal_35mm=a.focal_35mm or None,
+        glare=GlareParams(detector=a.detector),
         quality=QualityParams(residual_threshold=a.glare_threshold, min_region_area=a.min_region),
         curvature=_curvature_params(a),
     )
@@ -84,10 +86,11 @@ def _cmd_page(a) -> int:
 
 
 def _cmd_glare(a) -> int:
-    from .glare import detect_glare
+    from .glare import GlareParams, detect_glare
     from .regions import QualityParams, find_regions
 
     q = QualityParams()
+    gp = GlareParams(detector=a.detector)
     images = []
     for p in a.photos:
         img = cv2.imread(str(p), cv2.IMREAD_COLOR)
@@ -97,7 +100,7 @@ def _cmd_glare(a) -> int:
         images.append(img)
     out = []
     for p, img in zip(a.photos, images):
-        g = detect_glare(img).glare
+        g = detect_glare(img, params=gp).glare
         h, w = img.shape[:2]
         found = find_regions(g >= q.residual_threshold, (w, h), q.min_region_area)
         regions = []
@@ -273,6 +276,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--masks", action="store_true", help="also write PAGE.glare.png and PAGE.uncovered.png")
     p.add_argument("--debug", type=Path, help="write intermediate images to this folder")
     p.add_argument("--glare-threshold", type=float, default=0.5, help="residual glare counted as glare (0-1)")
+    p.add_argument("--detector", choices=["features", "net"], default="features", help="single-photo glare detector: hand-made features (default) or the learned model")
     p.add_argument("--min-region", type=float, default=0.0005, help="smallest region reported, as a fraction of the page")
     p.add_argument("--max-side", type=int, default=8000, help="cap on output long side (px)")
     p.add_argument("--focal-35mm", type=float, default=26.0, help="35 mm-equivalent focal length of the camera (0 = estimate)")
@@ -313,6 +317,7 @@ def main(argv: list[str] | None = None) -> int:
     g = sub.add_parser("glare", help="check single photos for glare")
     g.add_argument("photos", nargs="+", type=Path)
     g.add_argument("--overlay", type=Path, help="write each photo with its glare regions outlined to this folder")
+    g.add_argument("--detector", choices=["features", "net"], default="features", help="single-photo glare detector: hand-made features (default) or the learned model")
     g.set_defaults(func=_cmd_glare)
 
     ge = sub.add_parser("glare-eval", help="score a page's glare map against a hand-drawn mask")

@@ -29,7 +29,10 @@ in.
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -37,9 +40,25 @@ import numpy as np
 from .fuse import WEIGHT_MAX_SIDE
 
 
+NET_PATH = Path(__file__).parent / "models" / "glare_net.onnx"
+
+
 @dataclass
 class GlareParams:
     enabled: bool = True  # False skips detection; the report's fields stay, empty
+    # "features": the hand-made features below with their logistic weights
+    # (the default: it raises no false warnings on synthetic white pages);
+    # "net": the learned detector (models/glare_net.onnx, trained by
+    # tools/train_glare_net.py on real pages' overlap labels), which finds
+    # more of the glare on real sleeved pages but flags white paper and
+    # print borders on synthetic ones. Neither reaches the spec's targets.
+    detector: str = "features"
+    net_scale: float = 0.5  # the net runs on the detector's grid shrunk by this
+    # Hysteresis on the net's score, chosen on three validation pages the net
+    # was not trained on (0.9/0.5 kept false alarms under 0.1% there).
+    net_seed: float = 0.9
+    net_weak: float = 0.5
+    net_min_seed_px: int = 3
     # Logistic weights from tools/fit_glare.py (synthetic cases with seeds
     # 101-112, clean class weighted 30:1 so that false alarms stay rare).
     # Flatness carried no evidence on its own once weights were held
@@ -73,9 +92,9 @@ class GlareFeatures:
 
 @dataclass
 class GlareMap:
-    score: np.ndarray  # float32 0..1, raw logistic score
+    score: np.ndarray  # float32 0..1, raw score
     glare: np.ndarray  # float32 0..1, the score inside the grown areas, 0 elsewhere
-    features: GlareFeatures
+    features: GlareFeatures | None  # None from the learned detector
 
 
 def grid_scale(shape: tuple[int, ...]) -> float:
@@ -168,14 +187,19 @@ def glare_map(features: GlareFeatures, mask: np.ndarray | None, params: GlarePar
     b = p.bias if bias is None else bias
     m = np.ones(features.veil.shape, bool) if mask is None else mask.astype(bool)
     score = np.where(m, 1 / (1 + np.exp(-(b + _linear(features, p)))), 0).astype(np.float32)
-    seeds = (score >= p.seed).astype(np.uint8)
-    if p.min_seed_px > 1:
-        seeds = cv2.morphologyEx(seeds, cv2.MORPH_OPEN, np.ones((p.min_seed_px, p.min_seed_px), np.uint8))
-    weak = (score >= p.weak).astype(np.uint8)
-    _, labels = cv2.connectedComponents(weak, connectivity=8)
-    keep = np.unique(labels[(seeds > 0) & (weak > 0)])
-    grown = np.isin(labels, keep[keep > 0])
+    grown = hysteresis(score, p.seed, p.weak, p.min_seed_px)
     return GlareMap(score, np.where(grown, score, 0).astype(np.float32), features)
+
+
+def hysteresis(score: np.ndarray, seed: float, weak: float, min_seed_px: int) -> np.ndarray:
+    """Areas of ``score >= weak`` that hold a seed (``score >= seed``) at least ``min_seed_px`` wide."""
+    seeds = (score >= seed).astype(np.uint8)
+    if min_seed_px > 1:
+        seeds = cv2.morphologyEx(seeds, cv2.MORPH_OPEN, np.ones((min_seed_px, min_seed_px), np.uint8))
+    wk = (score >= weak).astype(np.uint8)
+    _, labels = cv2.connectedComponents(wk, connectivity=8)
+    keep = np.unique(labels[(seeds > 0) & (wk > 0)])
+    return np.isin(labels, keep[keep > 0])
 
 
 def detect_glare(img_bgr: np.ndarray, mask: np.ndarray | None = None, params: GlareParams | None = None, bias: float | None = None) -> GlareMap:
@@ -192,8 +216,54 @@ def detect_glare(img_bgr: np.ndarray, mask: np.ndarray | None = None, params: Gl
         img_bgr = cv2.resize(img_bgr, size, interpolation=cv2.INTER_AREA)
         if mask is not None:
             mask = cv2.resize(mask.astype(np.float32), size, interpolation=cv2.INTER_AREA) >= 0.5
+    if p.detector == "net":
+        return net_map(img_bgr, mask, p)
     feats = glare_features(img_bgr, mask, None, p)
     return glare_map(feats, mask, p, bias)
+
+
+_net_lock = threading.Lock()
+
+
+@lru_cache(maxsize=None)
+def _load_net(path: str):
+    return cv2.dnn.readNetFromONNX(path)
+
+
+def net_score(img_bgr: np.ndarray, mask: np.ndarray | None = None, params: GlareParams | None = None) -> np.ndarray:
+    """The learned detector's glare probability for each pixel of a grid-sized shot, 0 outside ``mask``.
+
+    The shot is taken as the camera wrote it (not tone-matched), black
+    outside its mask as the net was trained, and is shrunk by ``net_scale``
+    for the net; the score comes back at the shot's size.
+    """
+    p = params or GlareParams()
+    h, w = img_bgr.shape[:2]
+    m = np.ones((h, w), bool) if mask is None else mask.astype(bool)
+    img = np.where(m[..., None], img_bgr, 0).astype(np.uint8)
+    size = (max(1, round(w * p.net_scale)), max(1, round(h * p.net_scale)))
+    small = cv2.resize(img, size, interpolation=cv2.INTER_AREA)
+    blob = small.astype(np.float32).transpose(2, 0, 1)[None] / 255.0 - 0.5
+    net = _load_net(str(NET_PATH))
+    with _net_lock:  # one net object, shared by every thread
+        net.setInput(np.ascontiguousarray(blob, np.float32))
+        logit = net.forward()[0, 0]
+    prob = 1 / (1 + np.exp(-np.clip(logit, -30, 30)))
+    prob = cv2.resize(prob.astype(np.float32), (w, h), interpolation=cv2.INTER_LINEAR)
+    return np.where(m, prob, 0).astype(np.float32)
+
+
+def net_map(img_bgr: np.ndarray, mask: np.ndarray | None = None, params: GlareParams | None = None) -> GlareMap:
+    """The learned detector's score, and its glare areas grown from strong seeds into weak scores."""
+    p = params or GlareParams()
+    score = net_score(img_bgr, mask, p)
+    grown = hysteresis(score, p.net_seed, p.net_weak, p.net_min_seed_px)
+    return GlareMap(score, np.where(grown, score, 0).astype(np.float32), None)
+
+
+def weak_threshold(p: GlareParams) -> float:
+    """The score at which a shot counts as weakly glared, for the detector in use."""
+    return p.net_weak if p.detector == "net" else p.weak
 
 
 def adapt_bias(
