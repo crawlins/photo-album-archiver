@@ -65,6 +65,9 @@ data class ServerAlbum(
 )
 
 @Serializable
+data class MoveRequest(val shots: List<String>)
+
+@Serializable
 data class ServerShot(val id: String, val sha256: String, val bytes: Long, val taken: String)
 
 @Serializable
@@ -76,7 +79,7 @@ class Download(val stream: InputStream, val sha256: String?, private val respons
 }
 
 /**
- * The ten requests of the server contract (design, "Server contract"). Every
+ * The requests of the server contract (design, "Server contract"). Every
  * request carries `Authorization: Bearer <token>`; ids are UUIDs the app chose.
  */
 class ServerClient(
@@ -122,6 +125,12 @@ class ServerClient(
             .put(body)
             .build()
         return call(req) { }
+    }
+
+    /** Moves the listed shots of the album to [pageId]; shots already there or unknown to the server are skipped. */
+    suspend fun moveShots(albumId: String, pageId: String, shotIds: List<String>): ApiResult<Unit> {
+        val body = json.encodeToString(MoveRequest.serializer(), MoveRequest(shotIds)).toRequestBody(JSON)
+        return call(request(url("albums", albumId, "pages", pageId, "move").build()).post(body).build()) { }
     }
 
     suspend fun deleteShot(albumId: String, pageId: String, shotId: String): ApiResult<Unit> =

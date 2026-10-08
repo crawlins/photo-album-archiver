@@ -6,6 +6,7 @@ import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.RecordedRequest
 import okio.Buffer
 import org.bit63.albumarchiver.upload.AlbumMetadata
+import org.bit63.albumarchiver.upload.MoveRequest
 import org.bit63.albumarchiver.upload.ServerAlbum
 import org.bit63.albumarchiver.upload.ServerAlbumList
 import org.bit63.albumarchiver.upload.ServerAlbumSummary
@@ -102,6 +103,8 @@ class FakeAlbumServer : Dispatcher() {
             seg == listOf("albums") && request.method == "GET" -> json(ServerAlbumList(albums.values.sortedByDescending { it.updated }.map { it.summary() }))
             seg.size == 2 && seg[0] == "albums" -> albumRequest(request, seg[1])
             seg.size == 4 && seg[0] == "albums" && seg[2] == "pages" -> pageRequest(request, seg[1], seg[3])
+            seg.size == 5 && seg[0] == "albums" && seg[2] == "pages" && seg[4] == "move" && request.method == "POST" ->
+                moveRequest(request, seg[1], seg[3])
             seg.size == 6 && seg[0] == "albums" && seg[2] == "pages" && seg[4] == "shots" ->
                 shotRequest(request, seg[1], seg[3], seg[5])
             else -> status(404)
@@ -146,6 +149,25 @@ class FakeAlbumServer : Dispatcher() {
             status(204)
         }
         else -> status(405)
+    }
+
+    /** Moves the listed shots of the album to the page, creating it at the end; unknown and already-moved shots are skipped. */
+    private fun moveRequest(request: RecordedRequest, albumId: String, pageId: String): MockResponse {
+        val ids = ServerClient.json.decodeFromString<MoveRequest>(request.body.readUtf8()).shots
+        val a = albums[albumId] ?: return status(404)
+        val target = a.pages.firstOrNull { it.id == pageId } ?: run {
+            if (a.pages.size >= MAX_PAGES) return status(422)
+            StoredPage(pageId).also { a.pages += it }
+        }
+        val moving = a.pages.filter { it !== target }.flatMap { p -> p.shots.filter { it.id in ids }.map { p to it } }
+        if (target.shots.size + moving.size > MAX_SHOTS) return status(422)
+        for ((from, shot) in moving) {
+            from.shots.remove(shot)
+            target.shots += shot
+        }
+        target.shots.sortBy { it.taken }
+        a.updated = Instant.now()
+        return status(204)
     }
 
     private fun shotRequest(request: RecordedRequest, albumId: String, pageId: String, shotId: String): MockResponse {

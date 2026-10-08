@@ -93,6 +93,11 @@ class UploadProcessor(
         OpKind.DELETE_SHOT -> classify(client.deleteShot(op.albumId, op.pageId!!, op.shotId!!), isShot = false)
         OpKind.DELETE_PAGE -> classify(client.deletePage(op.albumId, op.pageId!!), isShot = false)
         OpKind.DELETE_ALBUM -> classify(client.deleteAlbum(op.albumId), isShot = false)
+        OpKind.MOVE_SHOTS -> when (val r = client.moveShots(op.albumId, op.pageId!!, listOf(op.shotId!!))) {
+            // The album is gone from the server: nothing is left to move.
+            is ApiResult.HttpError -> if (r.code == 404) Step.DROP else classify(r, isShot = false)
+            else -> classify(r, isShot = false)
+        }
     }
 
     private fun classify(result: ApiResult<*>, isShot: Boolean): Step = when (result) {

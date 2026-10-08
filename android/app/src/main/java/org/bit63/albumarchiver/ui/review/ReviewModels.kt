@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -13,6 +14,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -21,6 +23,9 @@ import org.bit63.albumarchiver.data.AlbumRepository
 import org.bit63.albumarchiver.data.Page
 import org.bit63.albumarchiver.data.Shot
 import org.bit63.albumarchiver.data.ShotState
+import org.bit63.albumarchiver.ui.ShotAction
+import org.bit63.albumarchiver.ui.ShotActionOutcome
+import org.bit63.albumarchiver.ui.ShotActions
 import org.bit63.albumarchiver.upload.PageLoader
 import org.bit63.albumarchiver.upload.ShotFetcher
 import kotlin.coroutines.CoroutineContext
@@ -134,6 +139,13 @@ class ReviewViewModel(
         .flatMapLatest { id -> if (id == null) flowOf(emptyList()) else repo.observeShots(id) }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
+    /** Selection and the actions menu on the page's thumbnail strip (shot-actions spec). */
+    val shotActions = ShotActions(repo, viewModelScope, io)
+
+    private val _messages = Channel<String>(Channel.BUFFERED)
+    /** Snackbar text after a shot action. */
+    val messages: Flow<String> = _messages.receiveAsFlow()
+
     fun previousPageId(): String? = adjacent(-1)
     fun nextPageId(): String? = adjacent(+1)
 
@@ -146,7 +158,38 @@ class ReviewViewModel(
 
     /** Shows the first shot of another page (Requirement 11.4). */
     fun showPage(pageId: String) {
+        shotActions.clear()
         _position.value = Slot(pageId, 0)
+    }
+
+    /** Shows the shot at [index] of the current page, from a tap on the strip. */
+    fun showShot(index: Int) {
+        _position.update { it?.copy(index = index) }
+    }
+
+    /**
+     * Carries out a shot action. A deletion lands as any other deletion does
+     * (Requirement 12.6); a move shows the first moved shot where it now is
+     * (shot-actions Requirement 8.3).
+     */
+    fun shotAction(action: ShotAction) {
+        val menu = shotActions.menu.value ?: return
+        viewModelScope.launch {
+            val at = withContext(io) {
+                val index = repo.shots(menu.shot.pageId).indexOfFirst { it.id == menu.shot.id }
+                slots(repo.pages(albumId)).indexOf(Slot(menu.shot.pageId, index))
+            }
+            when (val outcome = shotActions.perform(menu, action)) {
+                is ShotActionOutcome.Deleted -> land(at)
+                is ShotActionOutcome.Moved -> {
+                    val target = outcome.result.page.id
+                    val index = withContext(io) { repo.shots(target).indexOfFirst { it.id == outcome.result.firstShotId } }
+                    _position.value = Slot(target, index.coerceAtLeast(0))
+                    _messages.send(outcome.message)
+                }
+                is ShotActionOutcome.Refused -> _messages.send(outcome.message)
+            }
+        }
     }
 
     /** Records the shot the pager settled on, so a deletion knows where it happened. */

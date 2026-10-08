@@ -5,8 +5,8 @@
 Selection is UI state in the screen's ViewModel. The four actions are new
 `AlbumRepository` methods, each one Room transaction that changes the rows,
 checks the limits and queues the upload ops, like every existing repository
-method. A move reaches the server as one new `MOVE_SHOTS` op and one new
-server request, so photos never travel twice.
+method. A move reaches the server as a new `MOVE_SHOTS` op per shot and one
+new server request, so photos never travel twice.
 
 ```
  long-press ─▶ ShotSelection (ViewModel) ─▶ long-press again ─▶ ShotActionsSheet
@@ -109,8 +109,12 @@ A new op kind carries a move:
 
 ```kotlin
 enum class OpKind { ALBUM_META, PUT_SHOT, DELETE_SHOT, DELETE_PAGE, DELETE_ALBUM, MOVE_SHOTS }
-// MOVE_SHOTS: pageId = target page, shots = comma-separated shot ids (new nullable column)
+// MOVE_SHOTS: pageId = target page, shotId = the shot to move there
 ```
+
+One op per shot fits the existing `UploadOp` columns, so the database schema
+does not change and needs no migration. The server request takes a list, and
+a run is at most 25 shots, so the extra requests are cheap.
 
 The transaction for a move queues, in this order:
 
@@ -118,7 +122,7 @@ The transaction for a move queues, in this order:
    page, so its upload goes straight to where it now belongs. Without this,
    removing an emptied source page would also drop those uploads
    (`deletePutShotsForPage`).
-2. `MOVE_SHOTS` for the target page with every moved shot, including those
+2. A `MOVE_SHOTS` to the target page for every moved shot, including those
    whose upload is still pending. An upload may have reached the server
    without the phone seeing the response; the rewritten `PUT_SHOT` would
    then get 200 for a shot still filed under the old page, and the move puts
@@ -126,14 +130,13 @@ The transaction for a move queues, in this order:
 3. `DELETE_PAGE` for an emptied source page (from `removePageInTransaction`).
 4. `ALBUM_META` with the new page order.
 
-Sending the move before the metadata matters to processing: when the server
-sees the metadata with a page after the source, it marks the source page
-ready at once (album server Requirement 8.2), and by then the move has already
-taken the shots off it. The other order would process the source page with
-shots that are about to leave. A target page that is new reaches the server
-first through the move (or a rewritten `PUT_SHOT`), which creates it at the
-end of the album, and the metadata then puts it in its place, which the
-server already handles for shots that arrive before their metadata.
+A target page that is new reaches the server first through the move (or a
+rewritten `PUT_SHOT`), which creates it at the end of the album, and the
+metadata then puts it in its place, which the server already handles for
+shots that arrive before their metadata. Because the page then already
+exists when the metadata arrives, the metadata does not count as "a new page
+appeared"; instead the server makes every page that shots were moved off
+ready at once, since the user has just marked where it ends.
 
 A rewritten `PUT_SHOT` can sit in the queue ahead of the `ALBUM_META` that
 first lists its new page, which is the same case: the server creates the page
@@ -167,19 +170,23 @@ has not arrived. In one SQLite transaction the server:
 2. Creates the page if needed, refusing with 422 if that makes 501 pages.
 3. Selects the listed shots that are in the album and not on the page.
 4. Refuses with 422 if the page's shots plus those would exceed 25.
-5. Updates their `page_id`, and sets `changed_at` on every page they left and
-   on the target page.
+5. Hard-links each moved shot's file into the target page's folder
+   (`photos/<pageId>/<shotId>.jpg`), updates its `page_id`, sets `changed_at`
+   on every page they left and on the target page, and makes each page they
+   left ready.
 
-The shot files are stored by shot id, and previews are keyed by shot id
-(`thumbs/<shotId>.jpg`), so nothing moves on disk. A source page left with no
-shots goes to the `empty` state as when its last shot is deleted; the app
-deletes it right after in the usual case.
+After the commit it unlinks the old names. As on the phone, a crash leaves at
+most a name the index does not use, which startup cleanup removes. Previews
+are keyed by shot id alone (`thumbs/<shotId>.jpg`) and stay. A source page
+left with no shots loses its outputs and goes to the `empty` state as when
+its last shot is deleted; the app deletes it right after in the usual case.
+A page id that belongs to another album gets 409, as for a shot upload.
 
 New route row for the album server:
 
 | Route | Status codes |
 | --- | --- |
-| `POST /api/v1/albums/{albumId}/pages/{pageId}/move` | 204, 400, 404, 422 |
+| `POST /api/v1/albums/{albumId}/pages/{pageId}/move` | 204, 400, 404, 409, 422 |
 
 ## Components
 
@@ -188,13 +195,11 @@ Paths are under `android/app/src/main/java/org/bit63/albumarchiver/` and
 
 ### App data
 
-- `Entities.kt`: `OpKind.MOVE_SHOTS`; `UploadOp.shots: String?`. A Room
-  auto-migration from version 2 to 3 adds the column.
-- `AppDatabase.kt`: `PageDao.shiftUpStep1/2(albumId, afterPosition)`;
-  `ShotDao.moveToPage(ids, pageId)` and `setPath(id, path)`;
-  `UploadOpDao.retargetPutShots(shotIds, pageId)`.
-- `ShotStore`: `linkInto(albumId, pageId, shotId, from)` with the copy
-  fallback, and `unlink(path)`.
+- `Entities.kt`: `OpKind.MOVE_SHOTS`.
+- `AppDatabase.kt`: `PageDao.shiftUpStep1(albumId, after)` (then the existing
+  `shiftDownStep2`) and `atPosition`; `ShotDao.moveTo(id, pageId, path)`;
+  `UploadOpDao.retargetPutShot(shotId, pageId)`.
+- `ShotStore.link(from, dest)` with the copy fallback.
 - `AlbumRepository`:
   - `deleteRun(shotId): RunDeletion?` deletes the shot and every later shot
     of its page in one transaction.
@@ -202,35 +207,41 @@ Paths are under `android/app/src/main/java/org/bit63/albumarchiver/` and
     or to a new page after the last one.
   - `splitRunToNewPage(shotId): MoveResult` moves the run to a new page
     inserted after the source.
-  - `MoveResult` is `Moved(targetPage, count, sourceDeleted)`, `PageFull`,
-    `AlbumFull`, `NothingToMove` or `NotFound`. Both moves share one private
-    `moveInTransaction(run, target)` that does the row, path and op steps
-    above; the caller creates the target page first when needed.
+  - `MoveResult` is `Moved(page, count, firstShotId, sourceDeleted)`,
+    `PageFull`, `AlbumFull`, `NothingToMove` or `NotFound`. Both moves share
+    one private `moveRun(shotId, split)` that checks the limits, creates the
+    target page when needed and does the row, file and op steps above.
   - `runOf(shotId)` returns the selected shot and the later shots of its page
     in `takenAt, rowid` order. The UI uses it too, to label the menu and
     decide which actions are available.
 
 ### App UI
 
-- `ui/ShotStrip.kt`: the shared strip. It takes the page's shots, the shown
-  shot (review screen only) and a `ShotSelection` state, and reports taps
-  and long presses. It uses `combinedClickable`. The selected thumbnail gets
-  a thick accent border and a check mark, later thumbnails of the run a thin
-  accent border.
-- `ui/ShotActionsSheet.kt`: a `ModalBottomSheet` with the four actions, each
-  enabled or disabled with its reason from a `ShotActionsState` computed by
-  the ViewModel from `runOf`, the next page's shot count and the album's page
-  count. It also holds the two delete confirmations.
-- `CaptureViewModel` and `ReviewViewModel`: `selection: StateFlow<String?>`
-  (the selected shot id), `select`, `clearSelection`, `openActions`, and one
-  function per action that calls the repository and emits the snackbar or
-  navigation event. `CaptureViewModel.takeShot()` and `nextPage()` clear the
-  selection first. The capture screen's `VolumeKeyRouter` handler stays active
-  while only a selection is showing and is released while the sheet or a
-  dialog is open, as for any other dialog.
+- `ui/ShotActions.kt`: `ShotActionsMenu.of(run, page, pages)` works out the
+  labels and which actions are available, with their reasons, from the run,
+  its page's shot count, the next page's shot count and the album's page
+  count. `ShotActions` holds the selected shot id and the open menu as
+  `StateFlow`s (`onTap`, `onLongPress`, `clear`, `closeMenu`) and carries
+  out an action with `perform`, clearing the selection first. Both view
+  models own one.
+- `ui/ShotActionsUi.kt`: `ShotStrip`, the shared strip, which reports taps
+  and long presses (`combinedClickable`) and marks the selected thumbnail
+  with a thick accent border and a check mark and the later ones of its run
+  with a thin one; and `ShotActionsSheet`, a `ModalBottomSheet` with the four
+  actions and the two delete confirmations.
+- `CaptureViewModel` and `ReviewViewModel`: `shotActions` and
+  `shotAction(action)`, which shows a snackbar for a move or a refusal.
+  `CaptureViewModel.takeShot()` and `nextPage()` clear the selection first,
+  and so does a change of the current page. The capture screen's
+  `VolumeKeyRouter` handler stays active while only a selection is showing
+  and is released while the sheet or a confirmation is open, as for any
+  other dialog.
+- Both screens clear the selection on Back and on a tap on the preview or
+  the shot shown, through a transparent layer that is only there while a
+  shot is selected.
 - `ReviewScreen`: adds the strip along the bottom, kept in step with the
-  pager; after a move it navigates to the target page at the first moved
-  shot.
+  pager; after a move it shows the target page at the first moved shot, and
+  after a deletion it lands as for any other deletion.
 
 ### Upload
 
@@ -241,9 +252,9 @@ Paths are under `android/app/src/main/java/org/bit63/albumarchiver/` and
 
 - `api.py`: the `move` route and its Pydantic body
   (`shots: list[UUID]`, 1 to 25 items, unique, `extra="forbid"`).
-- `store.py`: `Store.move_shots(album_id, page_id, shot_ids)` doing the steps
-  above in one transaction, reusing the page-creation and limit helpers that
-  shot upload uses.
+- `store.py`: `Store.move_shots(album_id, page_id, shot_ids, link)` doing
+  the steps above in one transaction; `link` gives the files their new names
+  after every check has passed, as `place` does for a shot upload.
 
 ## Error handling
 
@@ -293,10 +304,9 @@ Each implementation task lands with the tests covering it.
 
 ## Changes to other specs
 
-When this is implemented, the Android app spec's server contract table and
-the album server's route table gain the `move` row, the app's `OpKind` list
-gains `MOVE_SHOTS`, and the app spec's out-of-scope line "Inserting or
-reordering pages" becomes "Reordering pages".
+The Android app spec's server contract table and the album server's route
+table have the `move` row, the app's `OpKind` list has `MOVE_SHOTS`, and the
+app spec's out-of-scope line no longer excludes inserting pages.
 
 ## Out of scope
 

@@ -10,8 +10,11 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -27,6 +30,9 @@ import org.bit63.albumarchiver.data.Page
 import org.bit63.albumarchiver.data.SettingsStore
 import org.bit63.albumarchiver.data.Shot
 import org.bit63.albumarchiver.data.ShotStore
+import org.bit63.albumarchiver.ui.ShotAction
+import org.bit63.albumarchiver.ui.ShotActionOutcome
+import org.bit63.albumarchiver.ui.ShotActions
 import java.util.UUID
 import kotlin.coroutines.CoroutineContext
 
@@ -109,8 +115,27 @@ class CaptureViewModel(
     /** Serialises captures: a press while one is in flight is dropped, not queued (Requirement 4.6). */
     private val captureLock = Mutex()
 
+    /** Selection and the actions menu on the thumbnail strip (shot-actions spec). */
+    val shotActions = ShotActions(repo, viewModelScope, io)
+
     init {
         refreshStorage()
+        // The strip now shows another page, so a selection on it no longer applies.
+        viewModelScope.launch {
+            state.map { it.page?.id }.distinctUntilChanged().drop(1).collect { shotActions.clear() }
+        }
+    }
+
+    /** Carries out a shot action; the capture screen keeps showing the current page, wherever that now is. */
+    fun shotAction(action: ShotAction) {
+        val menu = shotActions.menu.value ?: return
+        viewModelScope.launch {
+            when (val outcome = shotActions.perform(menu, action)) {
+                is ShotActionOutcome.Moved -> message(outcome.message)
+                is ShotActionOutcome.Refused -> message(outcome.message)
+                is ShotActionOutcome.Deleted -> Unit
+            }
+        }
     }
 
     fun refreshStorage() {
@@ -123,6 +148,7 @@ class CaptureViewModel(
     }
 
     fun takeShot() {
+        shotActions.clear()
         if (!captureLock.tryLock()) return
         viewModelScope.launch {
             try {
@@ -171,6 +197,7 @@ class CaptureViewModel(
     }
 
     fun nextPage() {
+        shotActions.clear()
         val album = state.value.album ?: return
         viewModelScope.launch {
             when (val r = withContext(io) { repo.startNextPage(album.id) }) {

@@ -218,7 +218,7 @@ first moving positions to negative values).
 
 ### Routes
 
-The ten from the app spec, plus three for results:
+The requests from the app spec, plus three for results:
 
 | Route | Status codes |
 | --- | --- |
@@ -229,6 +229,7 @@ The ten from the app spec, plus three for results:
 | `DELETE /api/v1/albums/{albumId}` | 204 |
 | `GET /api/v1/albums/{albumId}/pages/{pageId}` | 200, 404 |
 | `DELETE /api/v1/albums/{albumId}/pages/{pageId}` | 204 |
+| `POST /api/v1/albums/{albumId}/pages/{pageId}/move` | 204, 400, 404, 409, 422 (shot-actions spec) |
 | `PUT /api/v1/albums/{albumId}/pages/{pageId}/shots/{shotId}` | 200, 201, 400, 409, 413, 422 |
 | `GET /api/v1/albums/{albumId}/pages/{pageId}/shots/{shotId}[?size=thumb]` | 200, 304, 404 |
 | `DELETE /api/v1/albums/{albumId}/pages/{pageId}/shots/{shotId}` | 204 |
