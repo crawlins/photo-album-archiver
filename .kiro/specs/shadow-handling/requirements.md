@@ -201,8 +201,8 @@ truth and real pages to check the detector against.
    single-image cue SHALL find at least half of the shadows, with no `shadow`
    warning on the clean synthetic pages.
 6. ON Clark's real pages in the private data repository, no `shadow` warning
-   SHALL be raised on pages without a visible shadow, and the results on
-   pages with one SHALL be recorded in the design notes. Real photos SHALL NOT
+   SHALL be raised on pages labelled shadow-free, and the results on pages
+   labelled with a shadow SHALL be recorded in the data repository's notes. Real photos SHALL NOT
    be added to the public repository.
 
 ## Out of scope

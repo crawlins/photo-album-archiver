@@ -81,11 +81,14 @@ reports.
     - _Requirements: 4.3, 4.4, 5.1, 5.2_
 
 - [ ] 6. Real pages
-  - [ ] 6.1 Clark shoots a few pages in two shots each with a hand or phone
-    shadow in one shot, and adds them to `crawlins/photo-album-archiver-data`.
+  - [ ] 6.1 Label the shadows already in the real pages in
+    `crawlins/photo-album-archiver-data`: for each page, which shot has a
+    shadow (or every shot) and roughly where. Clark lists them, or Claude
+    proposes labels and Clark confirms. Labels go in the data repository.
   - [ ] 6.2 Run all real pages with shadows on and off. Check that pages
-    without a shadow give no warning and an unchanged image, and that the
-    new pages lose their shadow. Record results in a notes file in the data
+    without a shadow give no warning and an unchanged image, that labelled
+    shadows in one of several shots are removed, and that the others get a
+    `shadow` warning at the labelled place. Record results in a notes file in the data
     repository and adjust defaults if needed. No real photos in this
     repository.
     - _Requirements: 6.6_
