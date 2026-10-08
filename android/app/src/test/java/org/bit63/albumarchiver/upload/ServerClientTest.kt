@@ -63,6 +63,16 @@ class ServerClientTest {
         )
     }
 
+    @Test fun `moveShots posts the shot ids to the target page`() = runBlocking<Unit> {
+        respond(204)
+        assertThat(client.moveShots("a1", "p2", listOf("s1", "s2"))).isInstanceOf(ApiResult.Ok::class.java)
+        val r = server.takeRequest()
+        assertThat(r.method).isEqualTo("POST")
+        assertThat(r.path).isEqualTo("/base/api/v1/albums/a1/pages/p2/move")
+        assertThat(r.getHeader("Content-Type")).startsWith("application/json")
+        assertThat(r.body.readUtf8()).isEqualTo("""{"shots":["s1","s2"]}""")
+    }
+
     @Test fun `putShot sends the JPEG with its hash`() = runBlocking<Unit> {
         respond(201)
         val bytes = FakeAlbumServer.jpeg("x")

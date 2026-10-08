@@ -80,6 +80,13 @@ interface PageDao {
     suspend fun shiftDownStep1(albumId: String, deleted: Int)
     @Query("UPDATE page SET position = -position WHERE albumId = :albumId AND position < 0")
     suspend fun shiftDownStep2(albumId: String)
+
+    /** Opens a gap after [after] for a new page, the same two steps as [shiftDownStep1] in reverse. */
+    @Query("UPDATE page SET position = -(position + 1) WHERE albumId = :albumId AND position > :after")
+    suspend fun shiftUpStep1(albumId: String, after: Int)
+
+    @Query("SELECT * FROM page WHERE albumId = :albumId AND position = :position")
+    suspend fun atPosition(albumId: String, position: Int): Page?
 }
 
 @Dao
@@ -97,6 +104,8 @@ interface ShotDao {
     @Query("SELECT COUNT(*) FROM shot WHERE pageId = :pageId") suspend fun countForPage(pageId: String): Int
     @Query("SELECT path FROM shot") suspend fun allPaths(): List<String>
     @Query("UPDATE shot SET state = :state WHERE id = :id") suspend fun setState(id: String, state: ShotState)
+    @Query("UPDATE shot SET pageId = :pageId, path = :path WHERE id = :id")
+    suspend fun moveTo(id: String, pageId: String, path: String)
 }
 
 @Dao
@@ -111,6 +120,8 @@ interface UploadOpDao {
     suspend fun deletePutShot(shotId: String)
     @Query("DELETE FROM upload_op WHERE kind = 'PUT_SHOT' AND pageId = :pageId")
     suspend fun deletePutShotsForPage(pageId: String)
+    @Query("UPDATE upload_op SET pageId = :pageId WHERE kind = 'PUT_SHOT' AND shotId = :shotId")
+    suspend fun retargetPutShot(shotId: String, pageId: String)
     @Query("UPDATE upload_op SET attempts = attempts + 1 WHERE seq = :seq")
     suspend fun incrementAttempts(seq: Long)
     @Query("SELECT COUNT(*) FROM upload_op") fun observeCount(): Flow<Int>

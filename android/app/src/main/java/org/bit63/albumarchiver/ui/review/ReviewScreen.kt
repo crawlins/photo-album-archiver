@@ -1,11 +1,14 @@
 package org.bit63.albumarchiver.ui.review
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -24,6 +27,8 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -50,7 +55,9 @@ import org.bit63.albumarchiver.data.Shot
 import org.bit63.albumarchiver.data.ShotState
 import org.bit63.albumarchiver.ui.FullPlaceholder
 import org.bit63.albumarchiver.ui.LocalContainer
+import org.bit63.albumarchiver.ui.ShotActionsSheet
 import org.bit63.albumarchiver.ui.ShotFile
+import org.bit63.albumarchiver.ui.ShotStrip
 import java.io.File
 
 private sealed interface ReviewDialog {
@@ -78,6 +85,12 @@ fun ReviewScreen(albumId: String, pageId: String, index: Int, back: () -> Unit, 
     val networkReturns by container.networkReturns.count.collectAsStateWithLifecycle()
     var dialog by remember { mutableStateOf<ReviewDialog?>(null) }
     var menu by remember { mutableStateOf(false) }
+    val selectedShot by vm.shotActions.selected.collectAsStateWithLifecycle()
+    val shotMenu by vm.shotActions.menu.collectAsStateWithLifecycle()
+    val snackbar = remember { SnackbarHostState() }
+
+    BackHandler(enabled = selectedShot != null) { vm.shotActions.clear() }
+    LaunchedEffect(vm) { vm.messages.collect { snackbar.showSnackbar(it) } }
 
     // Nothing left to show: back to the page overview (Requirement 12.6).
     LaunchedEffect(position) { if (position == null) toOverview() }
@@ -124,6 +137,15 @@ fun ReviewScreen(albumId: String, pageId: String, index: Int, back: () -> Unit, 
             FullPlaceholder(text)
         }
 
+        // While a shot is selected, a tap on the shot only clears the selection.
+        if (selectedShot != null) {
+            Box(
+                Modifier.fillMaxSize()
+                    .pointerInput(Unit) { detectTapGestures { vm.shotActions.clear() } }
+                    .testTag("clearSelection"),
+            )
+        }
+
         Row(
             Modifier.fillMaxWidth().statusBarsPadding().background(Color(0x88000000)),
             verticalAlignment = Alignment.CenterVertically,
@@ -159,19 +181,37 @@ fun ReviewScreen(albumId: String, pageId: String, index: Int, back: () -> Unit, 
         // Previous- and next-page arrows, hidden at the first and last page (Requirement 11.4).
         val previous = remember(pages, pos) { vm.previousPageId() }
         val next = remember(pages, pos) { vm.nextPageId() }
-        Row(Modifier.align(Alignment.BottomCenter).fillMaxWidth().navigationBarsPadding().padding(16.dp)) {
-            if (previous != null) {
-                IconButton(onClick = { vm.showPage(previous) }, modifier = Modifier.testTag("previousPageArrow")) {
-                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = "Previous page", tint = Color.White)
-                }
+        Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().navigationBarsPadding()) {
+            SnackbarHost(snackbar)
+            if (current?.shotsLoaded == true && shots.isNotEmpty()) {
+                ShotStrip(
+                    shots = shots,
+                    selectedId = selectedShot,
+                    current = pos.index.coerceIn(0, shots.size - 1),
+                    onTap = { i, shot -> if (!vm.shotActions.onTap(shot.id)) vm.showShot(i) },
+                    onLongPress = { vm.shotActions.onLongPress(it.id) },
+                    thumbTag = "reviewThumb",
+                    modifier = Modifier.fillMaxWidth().background(Color(0x88000000)).padding(8.dp).testTag("reviewStrip"),
+                )
             }
-            Box(Modifier.weight(1f))
-            if (next != null) {
-                IconButton(onClick = { vm.showPage(next) }, modifier = Modifier.testTag("nextPageArrow")) {
-                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Next page", tint = Color.White)
+            Row(Modifier.fillMaxWidth().padding(16.dp)) {
+                if (previous != null) {
+                    IconButton(onClick = { vm.showPage(previous) }, modifier = Modifier.testTag("previousPageArrow")) {
+                        Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = "Previous page", tint = Color.White)
+                    }
+                }
+                Box(Modifier.weight(1f))
+                if (next != null) {
+                    IconButton(onClick = { vm.showPage(next) }, modifier = Modifier.testTag("nextPageArrow")) {
+                        Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = "Next page", tint = Color.White)
+                    }
                 }
             }
         }
+    }
+
+    shotMenu?.let { m ->
+        ShotActionsSheet(m, onAction = vm::shotAction, onDismiss = vm.shotActions::closeMenu)
     }
 
     when (val d = dialog) {

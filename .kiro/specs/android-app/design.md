@@ -194,6 +194,7 @@ are UUIDs chosen by the app.
 | `PUT /api/v1/albums/{albumId}/pages/{pageId}/shots/{shotId}` | JPEG; header `X-Content-SHA256` | store a shot; 201 when new, 200 if already stored with that hash, 400 if the body does not match the hash or is not a JPEG, 409 if stored with a different hash, 422 if the page already has 25 other shots or would be the album's 501st page |
 | `DELETE /api/v1/albums/{albumId}/pages/{pageId}/shots/{shotId}` | none | remove a shot; 204 even if absent |
 | `DELETE /api/v1/albums/{albumId}/pages/{pageId}` | none | remove a page and its shots; 204 even if absent |
+| `POST /api/v1/albums/{albumId}/pages/{pageId}/move` | JSON `{"shots": [ids]}` | move the listed shots of the album to the page, creating it at the end if unknown; shots already there or unknown are skipped; 204, 404 for an unknown album, 422 past a limit (shot-actions spec) |
 
 ```json
 {
@@ -339,7 +340,7 @@ enum class ShotState { PRESENT, NOT_DOWNLOADED }
                             val pageId: String?, val shotId: String?,
                             val attempts: Int = 0,
                             val pages: String? = null) // ALBUM_META: page ids in order
-enum class OpKind { ALBUM_META, PUT_SHOT, DELETE_SHOT, DELETE_PAGE, DELETE_ALBUM }
+enum class OpKind { ALBUM_META, PUT_SHOT, DELETE_SHOT, DELETE_PAGE, DELETE_ALBUM, MOVE_SHOTS }  // MOVE_SHOTS: shot-actions spec
 ```
 
 - `AlbumDao`, `PageDao`, `ShotDao`, `UploadOpDao`: Room DAOs exposing `Flow`s
@@ -410,7 +411,7 @@ enum class OpKind { ALBUM_META, PUT_SHOT, DELETE_SHOT, DELETE_PAGE, DELETE_ALBUM
 
 ### Upload (`upload/`)
 
-- `ServerClient`: OkHttp calls for the ten requests, mapping responses to
+- `ServerClient`: OkHttp calls for the requests above, mapping responses to
   `Ok`, `Retry` or `AuthFailed`; `listAlbums()`, `getAlbum()`, `getPage()`
   and `deleteAlbum()` are also called directly by the UI.
 - `AlbumImporter`: turns `GET /api/v1/albums/{albumId}` into one Room
@@ -483,7 +484,8 @@ enum class OpKind { ALBUM_META, PUT_SHOT, DELETE_SHOT, DELETE_PAGE, DELETE_ALBUM
 - Any image processing, preview of the processed page or feedback from the
   backend's report (coverage, glare, low resolution) on the phone. The report
   already has what a later version would need to ask for another shot.
-- Inserting or reordering pages, and adding shots to an earlier page.
+- Reordering pages, and adding shots to an earlier page. (Inserting a page
+  and moving shots between pages are in the shot-actions spec.)
 - Front camera, video, manual exposure controls.
 - Sharing, exporting or viewing the PDF on the phone.
 - Multiple users, accounts or server discovery.

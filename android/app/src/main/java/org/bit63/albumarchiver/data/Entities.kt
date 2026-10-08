@@ -68,7 +68,8 @@ data class Shot(
     val state: ShotState = ShotState.PRESENT,
 )
 
-enum class OpKind { ALBUM_META, PUT_SHOT, DELETE_SHOT, DELETE_PAGE, DELETE_ALBUM }
+/** `MOVE_SHOTS` moves the one shot [UploadOp.shotId] to the page [UploadOp.pageId]. */
+enum class OpKind { ALBUM_META, PUT_SHOT, DELETE_SHOT, DELETE_PAGE, DELETE_ALBUM, MOVE_SHOTS }
 
 /**
  * One change waiting to reach the server. Rows are sent strictly in [seq]

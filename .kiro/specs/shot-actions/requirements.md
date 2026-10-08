@@ -65,8 +65,10 @@ it and the photos after it.
    thumbnail clearly and mark every later thumbnail of the run less strongly,
    so that the user can see which shots "the ones after it" means.
 3. WHILE a shot is selected, WHEN the user taps or long-presses another
-   thumbnail in the same strip, THE app SHALL select that shot instead; a tap
-   SHALL NOT open the review screen while a shot is selected.
+   thumbnail in the same strip, THE app SHALL select that shot instead, and
+   WHEN the user taps the selected thumbnail, THE app SHALL clear the
+   selection; a tap SHALL NOT open the review screen while a shot is
+   selected.
 4. WHILE a shot is selected, WHEN the user presses Back or taps outside the
    strip, THE app SHALL clear the selection and do nothing else; WHEN the user
    takes a shot or starts the next page (by button or volume key), or the
@@ -252,9 +254,8 @@ server's pages match the phone's however the upload queue is going.
    up on that page whether or not an earlier upload attempt reached the
    server.
 4. THE app SHALL send the move before the album metadata that gives the new
-   page order, so that the server knows the source page is complete when it
-   sees the page after it, and processes it at once (album server
-   Requirement 8.2).
+   page order, so that a new target page exists on the server before the
+   metadata places it.
 5. WHEN the source page is deleted after a move, THE app SHALL queue its
    deletion after the move.
 
@@ -280,12 +281,18 @@ duplicates a photo.
    would give the album more than 500 pages, THEN THE server SHALL respond 422
    and change nothing.
 5. IF the album does not exist, THEN THE server SHALL respond 404; IF the
+   page belongs to another album, THEN THE server SHALL respond 409; IF the
    body is not a JSON object with a `shots` list of 1 to 25 distinct UUIDs and
-   nothing else, THEN THE server SHALL respond 400 and change nothing.
+   nothing else, THEN THE server SHALL respond 400; in each case THE server
+   SHALL change nothing.
 6. THE server SHALL make the whole move, its limit checks and the page
    creation in one transaction.
 7. THE server SHALL treat the page the shots came from and the page they went
    to as changed (album server Requirement 8.1), and a page left with no shots
    SHALL be handled as when its last shot is deleted.
-8. THE server SHALL keep each moved shot's preview, which does not depend on
-   the page.
+8. THE server SHALL make a page that shots were moved off ready for
+   processing at once, as a page is when the page after it appears (album
+   server Requirement 8.2), because the user has just marked where it ends.
+9. THE server SHALL move each shot's file to the new page's folder so that a
+   crash at any point leaves the file under at least one name and startup
+   cleanup removes the other, and SHALL keep each moved shot's preview.

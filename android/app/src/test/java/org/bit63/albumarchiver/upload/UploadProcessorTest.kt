@@ -5,6 +5,7 @@ import kotlinx.coroutines.flow.first
 import org.bit63.albumarchiver.TestEnv
 import org.bit63.albumarchiver.blocking
 import org.bit63.albumarchiver.data.AddShotResult
+import org.bit63.albumarchiver.data.MoveResult
 import org.bit63.albumarchiver.data.NextPageResult
 import org.bit63.albumarchiver.data.OpKind
 import org.bit63.albumarchiver.data.PageSize
@@ -162,6 +163,71 @@ class UploadProcessorTest {
         assertThat(processor.drain()).isEqualTo(UploadProcessor.Outcome.NO_SERVER)
         assertThat(queue()).hasSize(3)
         assertThat(fake.log).isEmpty()
+    }
+
+    @Test fun `a split page reaches the server as moves before the new page order`() = blocking {
+        val a = album()
+        val p1 = shoot(a.id, "s1").page
+        shoot(a.id, "s2")
+        processor.drain()
+        fake.log.clear()
+        val moved = repo.splitRunToNewPage("s2") as MoveResult.Moved
+        assertThat(processor.drain()).isEqualTo(UploadProcessor.Outcome.DONE)
+        assertThat(requests()).containsExactly(
+            "POST albums/${a.id}/pages/${moved.page.id}/move",
+            "PUT albums/${a.id}",
+        ).inOrder()
+        val stored = fake.album(a.id)!!
+        assertThat(stored.pages.map { it.id }).containsExactly(p1.id, moved.page.id).inOrder()
+        assertThat(stored.pages.map { p -> p.shots.map { it.id } }).containsExactly(listOf("s1"), listOf("s2")).inOrder()
+        assertThat(queue()).isEmpty()
+    }
+
+    @Test fun `a shot moved before it was uploaded lands on its new page`() = blocking {
+        val a = album()
+        shoot(a.id, "s1")
+        shoot(a.id, "s2")
+        shoot(a.id, "s3")
+        repo.startNextPage(a.id)
+        shoot(a.id, "s4")
+        val moved = repo.moveRunToNextPage("s2") as MoveResult.Moved
+        assertThat(processor.drain()).isEqualTo(UploadProcessor.Outcome.DONE)
+        val log = requests()
+        assertThat(log).contains("PUT albums/${a.id}/pages/${moved.page.id}/shots/s2")
+        assertThat(log.indexOf("PUT albums/${a.id}/pages/${moved.page.id}/shots/s3"))
+            .isLessThan(log.indexOf("POST albums/${a.id}/pages/${moved.page.id}/move"))
+        val stored = fake.album(a.id)!!
+        assertThat(stored.pages.map { p -> p.shots.map { it.id } }).containsExactly(listOf("s1"), listOf("s2", "s3", "s4")).inOrder()
+    }
+
+    @Test fun `a page emptied by a move is deleted on the server`() = blocking {
+        val a = album()
+        shoot(a.id, "s1")
+        repo.startNextPage(a.id)
+        val p2 = shoot(a.id, "s2").page
+        val p3 = (repo.startNextPage(a.id) as NextPageResult.Started).page
+        shoot(a.id, "s3")
+        processor.drain()
+        repo.moveRunToNextPage("s2")
+        processor.drain()
+        val stored = fake.album(a.id)!!
+        assertThat(stored.pages.map { it.id }).doesNotContain(p2.id)
+        assertThat(stored.pages.last().id).isEqualTo(p3.id)
+        assertThat(stored.pages.last().shots.map { it.id }).containsExactly("s2", "s3").inOrder()
+    }
+
+    @Test fun `a move for an album gone from the server is dropped, other failures follow the usual rules`() = blocking {
+        val a = album()
+        shoot(a.id, "s1")
+        processor.drain()
+        fake.log.clear()
+        env.db.ops().insert(UploadOp(kind = OpKind.MOVE_SHOTS, albumId = "gone", pageId = "p", shotId = "s1"))
+        assertThat(processor.drain()).isEqualTo(UploadProcessor.Outcome.DONE)
+        assertThat(queue()).isEmpty()
+        env.db.ops().insert(UploadOp(kind = OpKind.MOVE_SHOTS, albumId = a.id, pageId = "p", shotId = "s1"))
+        fake.failNext += 503
+        assertThat(processor.drain()).isEqualTo(UploadProcessor.Outcome.RETRY)
+        assertThat(queue()).hasSize(1)
     }
 
     @Test fun `409 and 422 are dropped and the queue moves on`() = blocking {

@@ -29,6 +29,21 @@ sealed interface NextPageResult {
 /** What a shot deletion did, for the confirmation and for where the review screen goes next. */
 data class ShotDeletion(val pageDeleted: Boolean)
 
+/** What deleting a shot and the shots after it did. */
+data class RunDeletion(val count: Int, val pageDeleted: Boolean)
+
+sealed interface MoveResult {
+    /** [count] shots went to [page]; [sourceDeleted] when the page they left was emptied and removed. */
+    data class Moved(val page: Page, val count: Int, val firstShotId: String, val sourceDeleted: Boolean) : MoveResult
+    /** The target page would have more than 25 shots. */
+    data object PageFull : MoveResult
+    /** A new page would be the album's 501st. */
+    data object AlbumFull : MoveResult
+    /** The move would leave the album as it is (the whole page to a page of its own). */
+    data object NothingToMove : MoveResult
+    data object NotFound : MoveResult
+}
+
 /**
  * The only writer of albums, pages, shots and upload ops. Every change is one
  * Room transaction that also queues the matching [UploadOp]s, so the server
@@ -214,6 +229,122 @@ class AlbumRepository(
         filePath?.let(store::deleteShotFile)
         pageToRemove?.let { store.deletePage(it.albumId, it.id) }
         if (result != null) kicker.kick()
+        return result
+    }
+
+    /** The shot [shotId] and every later shot of its page, in the order they were taken; empty when it is gone. */
+    suspend fun runOf(shotId: String): List<Shot> {
+        val shot = shots.get(shotId) ?: return emptyList()
+        return shots.forPage(shot.pageId).dropWhile { it.id != shotId }
+    }
+
+    /**
+     * Deletes a shot and every later shot of its page in one transaction,
+     * each as [deleteShot] would; an inner page left empty goes too, the last
+     * page stays as the empty current page.
+     */
+    suspend fun deleteRun(shotId: String): RunDeletion? {
+        var paths = emptyList<String>()
+        var pageToRemove: Page? = null
+        val result = db.withTransaction {
+            val shot = shots.get(shotId) ?: return@withTransaction null
+            val page = pages.get(shot.pageId) ?: return@withTransaction null
+            val run = runOf(shotId)
+            for (s in run) {
+                shots.delete(s.id)
+                ops.deletePutShot(s.id)
+                ops.insert(UploadOp(kind = OpKind.DELETE_SHOT, albumId = page.albumId, pageId = page.id, shotId = s.id))
+            }
+            paths = run.map { it.path }
+            val remaining = (page.shotCount - run.size).coerceAtLeast(0)
+            pages.setShotCount(page.id, remaining)
+            val isLast = pages.last(page.albumId)?.id == page.id
+            if (remaining == 0 && !isLast) {
+                removePageInTransaction(page)
+                pageToRemove = page
+            }
+            RunDeletion(run.size, pageDeleted = pageToRemove != null)
+        }
+        paths.forEach(store::deleteShotFile)
+        pageToRemove?.let { store.deletePage(it.albumId, it.id) }
+        if (result != null) kicker.kick()
+        return result
+    }
+
+    /**
+     * Moves a shot and the shots after it to the next page, or to a new page
+     * after the album's last page (shot-actions Requirement 5).
+     */
+    suspend fun moveRunToNextPage(shotId: String): MoveResult = moveRun(shotId, split = false)
+
+    /** Moves a shot and the shots after it to a new page inserted after theirs (shot-actions Requirement 6). */
+    suspend fun splitRunToNewPage(shotId: String): MoveResult = moveRun(shotId, split = true)
+
+    /**
+     * Each moved shot's file gets a second name in the target page's folder
+     * inside the transaction that records it there, and the old name goes
+     * after the commit, so a crash at any point leaves one name the database
+     * does not use, which startup cleanup removes. The server gets one
+     * `MOVE_SHOTS` per shot, before the `DELETE_PAGE` of an emptied page and
+     * the metadata with the new page order. A shot whose upload is still
+     * queued is uploaded to the target page and moved as well, in case an
+     * earlier attempt reached the server unconfirmed.
+     */
+    private suspend fun moveRun(shotId: String, split: Boolean): MoveResult {
+        val linked = mutableListOf<File>()
+        var oldPaths = emptyList<String>()
+        var removed: Page? = null
+        val result = try {
+            db.withTransaction<MoveResult> {
+                val shot = shots.get(shotId) ?: return@withTransaction MoveResult.NotFound
+                val source = pages.get(shot.pageId) ?: return@withTransaction MoveResult.NotFound
+                val albumId = source.albumId
+                val run = runOf(shotId)
+                val whole = run.size >= source.shotCount
+                val last = pages.last(albumId)!!
+                val next = if (split || last.id == source.id) null else pages.atPosition(albumId, source.position + 1)
+                if (whole && next == null) return@withTransaction MoveResult.NothingToMove
+                if (next == null && last.position >= Limits.MAX_PAGES_PER_ALBUM) return@withTransaction MoveResult.AlbumFull
+                if (next != null && next.shotCount + run.size > Limits.MAX_SHOTS_PER_PAGE) return@withTransaction MoveResult.PageFull
+
+                val target = next ?: Page(newId(), albumId, source.position + 1).also {
+                    pages.shiftUpStep1(albumId, source.position)
+                    pages.shiftDownStep2(albumId)
+                    pages.insert(it)
+                }
+                for (s in run) {
+                    val dest = store.shotFile(albumId, target.id, s.id)
+                    if (s.state == ShotState.PRESENT) {
+                        store.link(File(s.path), dest)
+                        linked += dest
+                    }
+                    shots.moveTo(s.id, target.id, dest.absolutePath)
+                    ops.retargetPutShot(s.id, target.id)
+                }
+                oldPaths = run.filter { it.state == ShotState.PRESENT }.map { it.path }
+                val moved = target.copy(shotCount = target.shotCount + run.size)
+                pages.setShotCount(target.id, moved.shotCount)
+                pages.setShotCount(source.id, source.shotCount - run.size)
+                for (s in run) {
+                    ops.insert(UploadOp(kind = OpKind.MOVE_SHOTS, albumId = albumId, pageId = target.id, shotId = s.id))
+                }
+                if (whole) {
+                    removePageInTransaction(source)
+                    removed = source
+                } else {
+                    queueMetadata(albumId)
+                }
+                MoveResult.Moved(pages.get(target.id) ?: moved, run.size, run.first().id, sourceDeleted = whole)
+            }
+        } catch (e: Throwable) {
+            linked.forEach { it.delete() }
+            throw e
+        }
+        if (result is MoveResult.Moved) {
+            oldPaths.forEach(store::deleteShotFile)
+            removed?.let { store.deletePage(it.albumId, it.id) }
+            kicker.kick()
+        }
         return result
     }
 

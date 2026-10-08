@@ -4,6 +4,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStream
+import java.nio.file.Files
 import java.security.MessageDigest
 
 /**
@@ -78,6 +79,29 @@ class ShotStore(
             throw IOException("Could not move shot into place")
         }
         return true
+    }
+
+    /**
+     * Gives [from] a second name, [dest], for a shot moving to another page.
+     * The caller records [dest] and only then deletes [from], so whichever
+     * name a crash leaves unrecorded is removed by [cleanUp]. Falls back to a
+     * copy through a temp file where hard links are not supported.
+     */
+    fun link(from: File, dest: File) {
+        dest.parentFile?.mkdirs()
+        dest.delete() // a name left by a move that crashed before its commit
+        try {
+            Files.createLink(dest.toPath(), from.toPath())
+        } catch (e: Exception) {
+            if (e is IOException && !from.isFile) throw e
+            val temp = File(dest.parentFile, dest.name + TEMP_SUFFIX)
+            try {
+                from.inputStream().use { input -> FileOutputStream(temp).use { out -> input.copyTo(out); out.fd.sync() } }
+                if (!temp.renameTo(dest)) throw IOException("Could not move shot into place")
+            } finally {
+                temp.delete()
+            }
+        }
     }
 
     fun deleteShotFile(path: String) {

@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.Settings
 import android.view.HapticFeedbackConstants
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.view.PreviewView
@@ -18,6 +19,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -30,9 +32,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -70,6 +69,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
@@ -95,7 +95,8 @@ import org.bit63.albumarchiver.camera.CameraController
 import org.bit63.albumarchiver.data.AlbumSummary
 import org.bit63.albumarchiver.ui.LocalContainer
 import org.bit63.albumarchiver.ui.LocalVolumeKeys
-import org.bit63.albumarchiver.ui.ShotThumbnail
+import org.bit63.albumarchiver.ui.ShotActionsSheet
+import org.bit63.albumarchiver.ui.ShotStrip
 import org.bit63.albumarchiver.ui.VolumeKeyRouter
 import org.bit63.albumarchiver.ui.albums.AlbumDialog
 import org.bit63.albumarchiver.ui.albums.AlbumDrawer
@@ -135,6 +136,8 @@ fun CaptureScreen(
     val lowStorage by vm.lowStorage.collectAsStateWithLifecycle()
     val capturing by vm.capturing.collectAsStateWithLifecycle()
     val albumRows by albumsVm.albums.collectAsStateWithLifecycle()
+    val selectedShot by vm.shotActions.selected.collectAsStateWithLifecycle()
+    val shotMenu by vm.shotActions.menu.collectAsStateWithLifecycle()
 
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -157,7 +160,7 @@ fun CaptureScreen(
     val keysActive = lifecycleState.isAtLeast(Lifecycle.State.RESUMED) &&
         state.album != null &&
         drawerState.currentValue == DrawerValue.Closed && drawerState.targetValue == DrawerValue.Closed &&
-        dialog == null
+        dialog == null && shotMenu == null
     val currentVm by rememberUpdatedState(vm)
     DisposableEffect(keysActive, volumeKeys) {
         val handler = object : VolumeKeyRouter.Handler {
@@ -167,6 +170,8 @@ fun CaptureScreen(
         if (keysActive) volumeKeys.register(handler)
         onDispose { volumeKeys.unregister(handler) }
     }
+
+    BackHandler(enabled = selectedShot != null) { vm.shotActions.clear() }
 
     LaunchedEffect(vm) {
         vm.events.collect { event ->
@@ -247,6 +252,15 @@ fun CaptureScreen(
 
             Box(Modifier.fillMaxSize().alpha(shutterFlash.value).background(Color.White))
 
+            // While a shot is selected, a tap on the preview only clears the selection.
+            if (selectedShot != null) {
+                Box(
+                    Modifier.fillMaxSize()
+                        .pointerInput(Unit) { detectTapGestures { vm.shotActions.clear() } }
+                        .testTag("clearSelection"),
+                )
+            }
+
             Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
                 Header(
                     state = state,
@@ -268,11 +282,19 @@ fun CaptureScreen(
                     Spacer(Modifier.weight(1f))
                 } else if (state.album != null) {
                     LimitHint(state)
-                    Thumbnails(state, onTap = { index ->
-                        val album = state.album
-                        val page = state.page
-                        if (album != null && page != null) openReview(album.id, page.id, index)
-                    })
+                    ShotStrip(
+                        shots = state.shots,
+                        selectedId = selectedShot,
+                        onTap = { index, shot ->
+                            val album = state.album
+                            val page = state.page
+                            if (!vm.shotActions.onTap(shot.id) && album != null && page != null) {
+                                openReview(album.id, page.id, index)
+                            }
+                        },
+                        onLongPress = { vm.shotActions.onLongPress(it.id) },
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp).testTag("thumbnails"),
+                    )
                     Controls(
                         shutterEnabled = !state.pageFull && !capturing,
                         nextEnabled = !state.albumFull,
@@ -302,6 +324,10 @@ fun CaptureScreen(
 
             SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(bottom = 160.dp))
         }
+    }
+
+    shotMenu?.let { menu ->
+        ShotActionsSheet(menu, onAction = vm::shotAction, onDismiss = vm.shotActions::closeMenu)
     }
 
     when (val d = dialog) {
@@ -516,32 +542,6 @@ private fun LimitHint(state: CaptureState) {
         textAlign = TextAlign.Center,
         modifier = Modifier.fillMaxWidth().background(Color(0xAA000000)).padding(8.dp).testTag("limitHint"),
     )
-}
-
-@Composable
-private fun Thumbnails(state: CaptureState, onTap: (Int) -> Unit) {
-    val listState = rememberLazyListState()
-    LaunchedEffect(state.shots.size) {
-        if (state.shots.isNotEmpty()) listState.animateScrollToItem(state.shots.size - 1)
-    }
-    LazyRow(
-        state = listState,
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp).testTag("thumbnails"),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        itemsIndexed(state.shots, key = { _, s -> s.id }) { index, shot ->
-            ShotThumbnail(
-                shot,
-                Modifier
-                    .size(56.dp)
-                    .clip(RoundedCornerShape(6.dp))
-                    .border(1.dp, Color.White, RoundedCornerShape(6.dp))
-                    .clickable { onTap(index) }
-                    .semantics { contentDescription = "Shot ${index + 1}" }
-                    .testTag("thumb"),
-            )
-        }
-    }
 }
 
 @Composable
