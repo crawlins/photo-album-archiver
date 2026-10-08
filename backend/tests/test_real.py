@@ -1,9 +1,11 @@
 """Real photos of album pages, when the test data is checked out.
 
-The photos live on the ``real-test-photos`` branch, not on this one:
+The photos are family photos, kept in the private repository
+crawlins/photo-album-archiver-data. Clone it beside this one and link its
+``real`` folder into the repository root:
 
-    git fetch origin real-test-photos
-    git checkout origin/real-test-photos -- real
+    git clone git@github.com:crawlins/photo-album-archiver-data.git ../photo-album-archiver-data
+    ln -s ../photo-album-archiver-data/real real
 
 Each page is a sleeved album page photographed twice, with neighbouring
 pages (the facing page, the stack of pages beside it) in view. There is no
