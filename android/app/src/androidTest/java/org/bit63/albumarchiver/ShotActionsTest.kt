@@ -83,8 +83,8 @@ class ShotActionsTest {
 
     @Test fun actionsThatWouldChangeNothingAreDisabledWithTheirReason() {
         openMenuOn(0)
-        compose.onNodeWithTag("actionMoveReason").assertTextContains("Already the whole last page")
-        compose.onNodeWithTag("actionNewPageReason").assertTextContains("Already the whole page")
+        compose.onNodeWithTag("actionMoveReason", useUnmergedTree = true).assertTextContains("Already the whole last page")
+        compose.onNodeWithTag("actionNewPageReason", useUnmergedTree = true).assertTextContains("Already the whole page")
         compose.onNodeWithTag("actionMove").performClick()
         compose.waitForIdle()
         assertThat(io { repo.pages(albumId) }).hasSize(2)
