@@ -77,6 +77,14 @@ jobs:
           emulator-options: -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -camera-back emulated
           working-directory: android
           script: ./gradlew connectedDebugAndroidTest
+      # The failing tests and their messages, since the HTML report is only an artifact.
+      - name: Show failed tests
+        if: failure()
+        run: |
+          grep -rl --include='*.xml' '<failure' app/build/outputs/androidTest-results/ | while read -r f; do
+            echo "== $f"
+            grep -B1 -A12 '<failure' "$f" | head -200
+          done
       - if: always()
         uses: actions/upload-artifact@v4
         with:
