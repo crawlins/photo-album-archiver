@@ -263,7 +263,8 @@ Unit tests (`tests/test_shadow.py`):
 Real pages: the 19 glare-training pages and 5 older pages in
 `crawlins/photo-album-archiver-data` are run through `albumproc page` with
 shadows on and off. Pages without a visible shadow must give no `shadow`
-warning and an unchanged image. A few pages shot on purpose with a hand or
-phone shadow in one of two shots check the fusion change. Results go in a
+warning and an unchanged image. Several of these pages already have shadows;
+they are labelled (page, shot, rough place) in the data repository and check
+both the fusion change and the warning. Results go in a
 short notes file in the data repository; no real photo or crop goes into the
 public repository.
