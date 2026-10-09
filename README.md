@@ -82,9 +82,21 @@ Known limit: the single-photo detector is cautious. Faint sleeve sheen looks
 much like pale print content, white borders and white paper in one photo, so
 it reports glare it is sure of and misses much of the faint kind (on synthetic
 stitched pages it finds roughly 5 to 10% of the leftover glare, with false
-alarms under 0.2% of the page). Where shots overlap, the comparison between
-them still removes glare as before. Glare no shot sees past is reported, never
-painted over.
+alarms under 0.2% of the page; on real sleeved pages it finds almost none).
+Where shots overlap, the comparison between them still removes glare as
+before. Glare no shot sees past is reported, never painted over.
+
+A learned detector (`--detector net`, a small CNN run through OpenCV, about
+0.1 s per photo) was trained on 15 real album pages, labelled by comparing
+each page's overlapping shots (`tools/real_glare_data.py`,
+`tools/train_glare_net.py`). On 9 real pages it had never seen it finds
+about 10% of the glare the overlap comparison finds, with false alarms on
+0.01% of the clean area, where the default detector finds 0.2%. It is not
+the default because it flags white paper and print borders on synthetic
+pages, and because most of what it misses, a soft veil over much of a page,
+cannot be told from the page's own lighting in one photo. The spec's targets
+(80% found, 0.2% false alarms) are out of reach for either detector from a
+single photo.
 
 ### Use
 
@@ -345,9 +357,9 @@ it listens on another address without TLS. Either:
   `curvature` in the page metadata and `--debug`'s `curvature_*.jpg`.
 - Glare can only be removed where at least one shot sees that spot without it,
   so for oversized pages each region needs two shots from different angles.
-- Tested on synthetic photos and on five real sleeved album pages (two shots
-  each, on the `real-test-photos` branch; `tests/test_real.py` runs them when
-  `real/` is checked out).
+- Tested on synthetic photos and on real sleeved album pages, kept in the
+  private crawlins/photo-album-archiver-data repository (family photos);
+  `tests/test_real.py` runs them when its `real/` is linked into the root.
 - The Android app has only been tested against a fake server and an emulator
   camera, not yet against a running `albumserver`.
 - Android ignores the capture screen's portrait lock on large screens
