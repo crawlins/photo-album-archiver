@@ -40,8 +40,11 @@ Terms are as in the glare detector and Android app specs. In addition:
   Glare there cannot be removed, only detected.
 - **Single-coverage region**: one connected area of single coverage above the
   minimum single-coverage area, with the same fields as an uncovered region.
-- **Page feedback**: the warnings of a page's last processing run, as the
-  server's album status reports them.
+- **Page feedback**: the warnings of a page's last processing run, with
+  their regions, as the server's album status reports them.
+- **Warned page**: a page whose latest feedback has at least one warning.
+- **Shot box**: a region's bounding box in one shot's own pixels, found by
+  mapping the region's page-frame box through that shot's homography.
 - **Target page**: the page new shots are added to. Today this is always the
   album's last page.
 
@@ -66,6 +69,12 @@ shot of it from another angle and have its glare removed.
 3. THE page metadata SHALL give each single-coverage region the same bounding
    box, area, location and edges fields as an uncovered region, plus the
    index of the one shot that covers it.
+3a. THE page metadata SHALL give every region of every kind (glare,
+   uncovered, single coverage) a `shot_boxes` map from used-shot index to
+   the region's shot box in that shot's full-resolution pixels, clipped to
+   the shot, for each shot whose frame the box falls into at all; an
+   uncovered region, which no shot covers, SHALL get the box of the shot
+   nearest to it when any part of the mapped box lies inside that shot.
 4. THE page metadata SHALL carry this under a `single_coverage` object with
    `fraction` and `regions`, beside `glare` and `uncovered`, and
    `schema_version` SHALL become 3.
@@ -88,6 +97,10 @@ shot of it from another angle and have its glare removed.
    album report as it does the other page warnings.
 10. THE system SHALL leave the composed page image and every existing
     metadata field unchanged.
+11. THE `glare` warning SHALL also give the number of regions with the cause
+    `all_shots_glared`, beside `single_shot`, and every warning (`glare`,
+    `incomplete_coverage`, `single_coverage`) SHALL carry its regions, so
+    that a reader of the warnings alone can draw them.
 
 ### Requirement 2: Glare detector accuracy, amended
 
@@ -128,9 +141,10 @@ that page.
 1. THE server SHALL use an idle period of 10 seconds by default before a
    changed page becomes ready for processing (album server spec, Requirement
    8.3 names 30 seconds); the setting SHALL stay configurable.
-2. THE server's album status SHALL keep reporting each page's warnings with
-   their fields, so that the app can read the `single_coverage` warning's
-   locations and fraction, not only its message.
+2. THE server's album status SHALL report each page's warnings with all
+   their fields, including their regions, and SHALL key each region's shot
+   boxes by shot id rather than by the run's input index, so that the app
+   can draw a region on the photo it holds.
 3. WHEN a shot is added to a page that already has a completed run, THE
    server SHALL treat the page as changed and process it again, as the album
    server spec already requires.
@@ -138,46 +152,52 @@ that page.
 ### Requirement 4: Page feedback in the app
 
 **User story:** As someone photographing an album, I want to be told, while
-I am still at the album, which part of a page needs one more shot, so that I
-never find out after the album has gone back on the shelf.
+I am still at the album, which page needs another photo and of which part,
+so that I never find out after the album has gone back on the shelf.
 
 #### Acceptance criteria
 
-1. WHILE a server is configured AND the capture screen or the page overview
-   is open, THE app SHALL fetch the album's status from the server when the
-   screen opens, after each of the album's uploads completes, and then every
-   10 seconds, and SHALL stop when the screen closes.
+1. WHILE a server is configured AND the capture screen, the page overview or
+   the review screen is open, THE app SHALL fetch the album's status from the
+   server when the screen opens, after each of the album's uploads completes,
+   and then every 10 seconds, and SHALL stop when the screen closes.
 2. THE app SHALL keep the latest page feedback per page in its local store,
    so that it survives a screen change and shows at once when a screen
    reopens.
-3. WHEN the target page or the page before it has a `single_coverage`,
-   `incomplete_coverage` or `glare` warning in its latest feedback, THE
-   capture screen SHALL show a feedback banner with the page number and the
-   warning's message, the most recent page first, `single_coverage` before
-   the other codes on the same page.
-4. WHEN the banner's page is the target page, THE banner SHALL say so and
-   the user adds shots as usual; WHEN it is the page before, THE banner SHALL
-   offer "Add shots to page N".
-5. WHEN the user chooses "Add shots to page N", THE app SHALL make page N the
-   target page: the capture screen SHALL show its number and its thumbnail
-   strip, new shots SHALL be stored and uploaded as shots of page N, and THE
-   app SHALL offer "Back to page M" (the album's last page) in place of "Next
-   page".
-6. WHEN the user chooses "Back to page M" or starts a new page from an
+3. THE app SHALL mark a warned page with a red dot on the top-right corner
+   of every picture of it: the page's tile in the page overview, each of its
+   thumbnails in the capture screen's strip and the review screen's strip,
+   and the capture screen's page number when the target page is warned.
+4. WHEN the user taps a marked thumbnail, THE app SHALL open the review
+   screen at that photo; WHEN the user taps a marked page tile, THE app
+   SHALL open the review screen at the first photo of that page that has a
+   shot box for one of its warnings, or its first photo when none has.
+5. WHILE the review screen shows a photo of a warned page, THE app SHALL
+   show the page's warning messages at the bottom of the screen, and SHALL
+   draw a rectangle on the photo for every region of those warnings that
+   has a shot box in this photo, in red for `glare` and `single_coverage`
+   regions and in another colour for `incomplete_coverage`, scaled with the
+   photo as the user zooms.
+6. WHEN a region has no shot box in the photo shown, THE warning's message
+   SHALL still be listed, with the region's location word, so that the
+   user knows where to aim even when no photo shows the spot.
+7. THE review screen of a warned page SHALL offer "Add shots to page N";
+   WHEN the user chooses it, THE app SHALL make page N the target page and
+   return to the capture screen: the capture screen SHALL show its number
+   and its thumbnail strip, new shots SHALL be stored and uploaded as shots
+   of page N, and THE app SHALL offer "Back to page M" (the album's last
+   page) in place of "Next page".
+8. WHEN the user chooses "Back to page M" or starts a new page from an
    earlier target page, THE app SHALL make the album's last page the target
    page again without creating a page.
-7. THE app SHALL restore the target page after the app is restarted, and
+9. THE app SHALL restore the target page after the app is restarted, and
    SHALL reset it to the album's last page when that page is deleted.
-8. WHEN a page's latest feedback no longer has a warning, THE app SHALL
-   remove its banner.
-9. THE page overview SHALL show on each page its processing state and, when
-   its latest feedback has warnings, a warning mark with the messages, so
-   that the user can find every page that needs another shot before leaving
-   the album.
-10. WHILE no server is configured, OR the status request fails, THE app
-    SHALL show no feedback and no error on the capture screen; the drawer's
-    existing upload state is enough.
-11. THE app SHALL show feedback only for pages whose every shot has been
+10. WHEN a page's latest feedback no longer has a warning, THE app SHALL
+    remove its red dots, rectangles and messages.
+11. WHILE no server is configured, OR the status request fails, THE app
+    SHALL show no feedback and no error; the drawer's existing upload state
+    is enough.
+12. THE app SHALL show feedback only for pages whose every shot has been
     uploaded, since the server's run did not see the others.
 
 ### Requirement 5: Compatibility
@@ -194,4 +214,4 @@ break nothing that works today.
    2 and SHALL show no `single_coverage` feedback for them until they are
    processed again.
 3. THE app SHALL keep working against a server that reports no
-   `single_coverage` warnings.
+   `single_coverage` warnings and warnings without regions or shot boxes.

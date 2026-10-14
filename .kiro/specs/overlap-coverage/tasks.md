@@ -10,12 +10,18 @@ task 5 is the app PR.
     `single_coverage_regions` to `regions.py`: `count == 1`, a 3 × 3 opening,
     `find_regions`, `shots` set to the covering shot, `edges` kept.
     - _Requirements: 1.1, 1.2, 1.3_
-  - [ ] 1.2 Add the `single_coverage` warning to `page_warnings`, with the
-    one-region and several-regions messages.
-    - _Requirements: 1.5, 1.6_
-  - [ ] 1.3 Tests in `tests/test_quality.py`: halves, seam only, one shot,
-    `shots` and `edges`, message text.
-    - _Requirements: 1.2, 1.3, 1.5, 1.6_
+  - [ ] 1.2 Add `shot_boxes` to `Region` and fill it in every region finder
+    from the used shots' page-to-shot homographies and sizes; nearest shot
+    for uncovered regions.
+    - _Requirements: 1.3a_
+  - [ ] 1.3 Add the `single_coverage` warning to `page_warnings`, with the
+    one-region and several-regions messages; put `regions` and
+    `all_shots_glared` on the warnings.
+    - _Requirements: 1.5, 1.6, 1.11_
+  - [ ] 1.4 Tests in `tests/test_quality.py`: halves, seam only, one shot,
+    `shots` and `edges`, shot boxes under identity and affine maps, message
+    text, warning fields.
+    - _Requirements: 1.2, 1.3, 1.3a, 1.5, 1.6, 1.11_
 
 - [ ] 2. Page metadata, masks and CLI
   - [ ] 2.1 In `pipeline.py`: compute `single_coverage` in `_assess`, add it
@@ -50,29 +56,34 @@ task 5 is the app PR.
     model and `deploy/albumserver.toml`; update its test and the album server
     spec's Requirement 8.3 note.
     - _Requirements: 3.1_
-  - [ ] 4.2 Add a status test that a processed stitched page returns the
-    `single_coverage` warning with `locations` and `fraction`.
+  - [ ] 4.2 In the worker, rewrite each region's `shot_boxes` keys from
+    input index to shot id when storing a run's warnings; a status test that
+    a processed stitched page returns the `single_coverage` warning with
+    `locations`, `fraction` and shot boxes keyed by shot id.
     - _Requirements: 3.2_
 
 - [ ] 5. Page feedback in the app
-  - [ ] 5.1 `ServerClient.albumStatus` and the status models; a fake-server
-    test.
+  - [ ] 5.1 `ServerClient.albumStatus` and the status models, regions and
+    shot boxes included, unknown fields ignored; a fake-server test.
     - _Requirements: 4.1, 5.3_
   - [ ] 5.2 `PageFeedback` entity and DAO; `FeedbackPoller` started and
-    stopped with the capture and overview screens, triggered by upload
-    completion and a 10 second timer; failures silent.
-    - _Requirements: 4.1, 4.2, 4.10_
-  - [ ] 5.3 Target page: `Album.targetPageId`, `setTargetPage`,
-    `backToLastPage`, the capture screen reading the target page for its
-    number, strip and shot saving, "Next page" relabelled and rerouted,
-    restore on restart, fallback on deletion.
-    - _Requirements: 4.5, 4.6, 4.7_
-  - [ ] 5.4 The feedback banner on the capture screen: page selection and
-    code order, uploaded-only filter, "Add shots to page N", removal when the
-    warning clears.
-    - _Requirements: 4.3, 4.4, 4.8, 4.11_
-  - [ ] 5.5 Page overview state word and warning mark with messages.
-    - _Requirements: 4.9_
+    stopped with the capture, overview and review screens, triggered by
+    upload completion and a 10 second timer; failures silent; `warnedPages`
+    excluding pages with queued uploads.
+    - _Requirements: 4.1, 4.2, 4.11, 4.12_
+  - [ ] 5.3 Red dots: overview tiles, both thumbnail strips, the capture
+    screen's page number.
+    - _Requirements: 4.3, 4.10_
+  - [ ] 5.4 Review screen: warning messages at the bottom, rectangles over
+    the zoomable photo from the current photo's shot boxes, location words
+    for regions without one; overview tap opens the first photo with a box.
+    - _Requirements: 4.4, 4.5, 4.6, 4.10_
+  - [ ] 5.5 Target page: `Album.targetPageId`, "Add shots to page N" on the
+    review screen, `setTargetPage`, `backToLastPage`, the capture screen
+    reading the target page for its number, strip and shot saving, "Next
+    page" relabelled and rerouted, restore on restart, fallback on deletion.
+    - _Requirements: 4.7, 4.8, 4.9_
   - [ ] 5.6 View model unit tests for 5.2 to 5.5 and one emulator test that
-    takes a shot into the earlier page from the banner.
-    - _Requirements: 4.1 to 4.11_
+    taps a marked thumbnail, sees the rectangle, and takes a shot into the
+    earlier page.
+    - _Requirements: 4.1 to 4.12_
