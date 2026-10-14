@@ -124,7 +124,7 @@ class ShotActionsTest {
         compose.waitForTag("pageNumber")
         compose.onNodeWithTag("pageNumber").performClick()
         compose.waitForTag("pageGrid")
-        compose.onNodeWithTag("page:1").performClick()
+        compose.openPageReview(1)
         compose.waitUntil(5000) { compose.onAllNodesWithTag("reviewThumb").fetchSemanticsNodes().size == 2 }
         val second = compose.onAllNodesWithTag("reviewThumb")[1]
         second.performTouchInput { longClick() }

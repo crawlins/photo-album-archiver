@@ -236,7 +236,7 @@ class ServerTest {
         compose.waitForTag("pageGrid")
         compose.onNodeWithText("2 shots").assertExists()
         compose.waitUntil(10000) { io { repo.page(pages.first().id)!!.shotsLoaded } }
-        compose.onNodeWithTag("page:1").performClick()
+        compose.openPageReview(1)
         compose.waitUntil(10000) { io { repo.shots(pages.first().id).first().state } == ShotState.PRESENT }
         assertThat(fake.log.any { it.endsWith("/shots/a1?size=thumb") }).isTrue()
         assertThat(fake.log.any { it.endsWith("/shots/a1") }).isTrue()

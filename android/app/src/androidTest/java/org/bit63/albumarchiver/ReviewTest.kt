@@ -81,7 +81,7 @@ class ReviewTest {
 
     @Test fun swipingMovesThroughTheShotsOfAPage() {
         openOverview()
-        compose.onNodeWithTag("page:2").performClick()
+        compose.openPageReview(2)
         labelIs("Page 2, shot 1 of 3")
         compose.onNodeWithTag("pager").performTouchInput { swipeLeft() }
         labelIs("Page 2, shot 2 of 3")
@@ -95,7 +95,7 @@ class ReviewTest {
 
     @Test fun pageArrowsMoveBetweenPagesAndHideAtTheEnds() {
         openOverview()
-        compose.onNodeWithTag("page:1").performClick()
+        compose.openPageReview(1)
         labelIs("Page 1, shot 1 of 2")
         assertThat(compose.onAllNodesWithTag("previousPageArrow").fetchSemanticsNodes()).isEmpty()
         compose.onNodeWithTag("nextPageArrow").performClick()
@@ -109,7 +109,7 @@ class ReviewTest {
 
     @Test fun deletingAShotAsksAndShowsTheNextShot() {
         openOverview()
-        compose.onNodeWithTag("page:2").performClick()
+        compose.openPageReview(2)
         labelIs("Page 2, shot 1 of 3")
         compose.onNodeWithTag("reviewMenu").performClick()
         compose.onNodeWithText("Delete shot").performClick()
@@ -122,7 +122,7 @@ class ReviewTest {
     @Test fun deletingAnInnerPagesOnlyShotSaysThePageGoesToo() {
         io { repo.deleteShot("p1s1") }
         openOverview()
-        compose.onNodeWithTag("page:1").performClick()
+        compose.openPageReview(1)
         labelIs("Page 1, shot 1 of 1")
         compose.onNodeWithTag("reviewMenu").performClick()
         compose.onNodeWithText("Delete shot").performClick()
@@ -134,7 +134,7 @@ class ReviewTest {
 
     @Test fun deletingAPageFromReviewRenumbers() {
         openOverview()
-        compose.onNodeWithTag("page:1").performClick()
+        compose.openPageReview(1)
         labelIs("Page 1, shot 1 of 2")
         compose.onNodeWithTag("reviewMenu").performClick()
         compose.onNodeWithText("Delete page").performClick()
@@ -159,7 +159,7 @@ class ReviewTest {
             repo.pages(albumId).dropLast(1).forEach { repo.deletePage(it.id) }
         }
         openOverview()
-        compose.onNodeWithTag("page:1").performClick()
+        compose.openPageReview(1)
         labelIs("Page 1, shot 1 of 1")
         compose.onNodeWithTag("reviewMenu").performClick()
         compose.onNodeWithText("Delete page").performClick()
@@ -169,9 +169,11 @@ class ReviewTest {
 
     @Test fun reviewingNeverChangesWhereNewShotsGo() {
         openOverview()
-        compose.onNodeWithTag("page:1").performClick()
+        compose.openPageReview(1)
         labelIs("Page 1, shot 1 of 2")
         dismissSystemDialogs()
+        androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
+        compose.waitForTag("toShot")  // the page view the review was opened from
         androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
         compose.waitForTag("pageGrid")
         androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(android.view.KeyEvent.KEYCODE_BACK)
