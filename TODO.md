@@ -131,6 +131,19 @@ Nothing is implemented; every task (1.1 to 7) is open. Blocked on PR #1.
   masks, done locally.
 - Server and app support is future work: PR #9 already passes page warnings
   through from `report.json` (`worker.py:227-238`), and the app shows none.
+- [ ] **Revisit training the learned glare detector after a full album.**
+  The net (`--detector net`, PR #22) was trained on 15 pages of one album
+  and finds 10% of single-shot glare on held-out real pages. The
+  single-shot glare spec (`.kiro/specs/single-shot-glare/`) relies on
+  second-shot prompts for now. Once a full album (10 or more pages) has
+  been shot under the overlap coverage guarantee, label every page with
+  `tools/real_glare_data.py`, hold that album out for testing, retrain
+  (design "Option A": whole-page context, page brightness as an input,
+  `clean_white` hard negatives), and compare with the spec's replay numbers.
+  Make `net` the default only at recall 0.5 or more, false alarms at most
+  0.2% of clean area and no `glare` warning on `clean_white`. Photos and
+  labels stay in `crawlins/photo-album-archiver-data`; only the exported
+  model and the numbers come here.
 
 ## Page curvature (`page-curvature`, implemented)
 
