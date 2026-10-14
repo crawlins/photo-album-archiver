@@ -17,6 +17,7 @@ def _codes(report):
 
 @pytest.mark.parametrize("seed", [10, 13])
 def test_glare_removed_by_merging_shots(seed):
+    """Three full-page shots: fusion removes the glare and nothing is single-covered."""
     case = make_case(seed, "glare", 3)
     res = process_page(case.images)
     s = score(res.image, case.page)
@@ -30,6 +31,14 @@ def test_glare_removed_by_merging_shots(seed):
     assert score(single.image, case.page).glare_px > 5 * max(s.glare_px, 1e-4)
     # Merging removed the glare, and the detector agrees.
     assert "glare" not in _codes(res.report)
+    assert res.report.glare["fraction"] <= 0.005
+    # Every pixel is in all three shots, so nothing is single-covered; the
+    # page shot once is single-covered everywhere and says so.
+    assert "single_coverage" not in _codes(res.report) and res.report.single_coverage["fraction"] < 0.01
+    (w,) = [w for w in single.report.warnings if w["code"] == "single_coverage"]
+    assert single.report.single_coverage["fraction"] == 1.0 and len(w["regions"]) == 1
+    assert w["regions"][0]["shots"] == [0] and w["regions"][0]["edges"] == ["top", "right", "bottom", "left"]
+    assert set(w["regions"][0]["shot_boxes"]) == {0}
 
 
 @pytest.mark.parametrize("n", [2, 4])
@@ -112,11 +121,30 @@ def sleeve_stitch():
 def test_glare_left_in_a_stitched_page_is_reported(sleeve_stitch):
     case, res, _, _, _ = sleeve_stitch
     r = res.report
-    assert r.schema_version == 2
+    assert r.schema_version == 3
     (w,) = [w for w in r.warnings if w["code"] == "glare"]
-    assert w["single_shot"] >= 1
+    assert w["single_shot"] >= 1 and w["single_shot"] + w["all_shots_glared"] == len(w["regions"])
     assert any(g["cause"] == "single_shot" for g in r.glare["regions"])
     assert set(r.glare["per_shot"]) == set(r.used)
+    # Most of a two-part page is covered by one shot; that is reported with
+    # the part each shot alone covers, boxed in that shot's own pixels.
+    (sc,) = [w for w in r.warnings if w["code"] == "single_coverage"]
+    assert sc["fraction"] > 0.5 and len(sc["regions"]) == 2
+    assert {tuple(g["shots"]) for g in sc["regions"]} == {(0,), (1,)}
+    for g in sc["regions"]:
+        (i,) = g["shots"]
+        x0, y0, x1, y1 = g["shot_boxes"][i]
+        h, w_ = case.images[i].shape[:2]
+        assert 0 <= x0 < x1 <= w_ - 1 and 0 <= y0 < y1 <= h - 1
+        assert (x1 - x0) * (y1 - y0) > 0.3 * w_ * h
+    assert res.single_coverage.shape == res.image.shape[:2]
+    grid_single = cv2.resize(res.single_coverage.astype(np.float32), res.residual_glare.shape[::-1], interpolation=cv2.INTER_AREA) >= 0.5
+    in_regions = np.zeros_like(grid_single)
+    gh, gw = grid_single.shape
+    for g in r.single_coverage["regions"]:
+        bx0, by0, bx1, by1 = g["bbox"]
+        in_regions[int(by0 * gh) : int(np.ceil(by1 * gh)), int(bx0 * gw) : int(np.ceil(bx1 * gw))] = True
+    assert (grid_single & in_regions).sum() >= 0.9 * grid_single.sum()
     # Against the glare actually left in the page: what is reported is
     # really there. The cautious detector finds only part of it (see
     # glare.py), so recall is held to what it reaches, to catch regressions.
@@ -168,7 +196,7 @@ def test_missing_part_of_the_page_is_located():
     q = _assess(res, [0, 1], [], (1800, 1200), opt)
     (w,) = [w for w in q.warnings if w["code"] == "incomplete_coverage"]
     (u,) = q.uncovered["regions"]
-    assert w["regions"] == 1 and w["message"].endswith("(bottom-right corner).")
+    assert len(w["regions"]) == 1 and w["message"].endswith("(bottom-right corner).")
     assert u["location"] == "bottom-right" and u["edges"] == ["right", "bottom"]
     assert u["bbox"] == pytest.approx([0.8333, 0.6667, 1.0, 1.0], abs=0.01)
     assert u["bbox_px"][0] == pytest.approx(1500, abs=20)
