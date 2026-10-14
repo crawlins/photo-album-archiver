@@ -11,6 +11,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import kotlinx.coroutines.launch
 import org.bit63.albumarchiver.ui.capture.CaptureScreen
+import org.bit63.albumarchiver.ui.page.PageViewScreen
 import org.bit63.albumarchiver.ui.review.PageOverviewScreen
 import org.bit63.albumarchiver.ui.review.ReviewScreen
 import org.bit63.albumarchiver.ui.server.ServerAlbumsScreen
@@ -22,6 +23,7 @@ object Routes {
     const val SETTINGS = "settings"
     fun overview(albumId: String) = "overview/$albumId"
     fun review(albumId: String, pageId: String, index: Int = 0) = "review/$albumId/$pageId/$index"
+    fun page(albumId: String, pageId: String) = "page/$albumId/$pageId"
 }
 
 @Composable
@@ -54,8 +56,26 @@ fun AppNavigation() {
         ) { entry ->
             PageOverviewScreen(
                 albumId = entry.arguments!!.getString("albumId")!!,
-                openReview = { albumId, pageId, index -> nav.navigate(Routes.review(albumId, pageId, index)) },
+                openPage = { albumId, pageId -> nav.navigate(Routes.page(albumId, pageId)) },
                 back = { nav.popBackStack() },
+            )
+        }
+        composable(
+            "page/{albumId}/{pageId}",
+            arguments = listOf(
+                navArgument("albumId") { type = NavType.StringType },
+                navArgument("pageId") { type = NavType.StringType },
+            ),
+        ) { entry ->
+            val args = entry.arguments!!
+            val albumId = args.getString("albumId")!!
+            val pageId = args.getString("pageId")!!
+            PageViewScreen(
+                albumId = albumId,
+                pageId = pageId,
+                back = { nav.popBackStack() },
+                openReview = { a, p, index -> nav.navigate(Routes.review(a, p, index)) },
+                toCapture = { nav.popBackStack(Routes.CAPTURE, inclusive = false) },
             )
         }
         composable(
@@ -79,6 +99,10 @@ fun AppNavigation() {
                     }
                 },
                 toCapture = { nav.popBackStack(Routes.CAPTURE, inclusive = false) },
+                toPageView = { a, p ->
+                    // "Page" from a review opened from the page view goes back to it, not deeper.
+                    nav.navigate(Routes.page(a, p)) { popUpTo("page/{albumId}/{pageId}") { inclusive = true } }
+                },
             )
         }
         composable(Routes.SERVER) {

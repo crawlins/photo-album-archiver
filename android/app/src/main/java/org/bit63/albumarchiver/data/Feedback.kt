@@ -1,5 +1,6 @@
 package org.bit63.albumarchiver.data
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.PrimaryKey
 import kotlinx.serialization.json.Json
@@ -29,6 +30,10 @@ data class PageFeedback(
     val lastRun: String?,
     val warningsJson: String,
     val fetchedAt: Instant,
+    /** Whether the server holds a preview of the composed page (Requirement 6.2). */
+    @ColumnInfo(defaultValue = "0") val preview: Boolean = false,
+    /** Each shot's outline on the composed page as sent: a JSON object of shot id to `[[x, y], ...]` page fractions. */
+    @ColumnInfo(defaultValue = "{}") val outlinesJson: String = "{}",
 ) {
     val warnings: List<PageWarning> get() = parseWarnings(warningsJson)
 }
@@ -139,6 +144,30 @@ fun List<PageWarning>.linesFor(shotId: String?): List<WarningLine> = mapNotNull 
     WarningLine(w.code, text)
 }
 
+/** The warnings bar's lines on the page view, where every region is on the picture: the messages as they are. */
+fun List<PageWarning>.plainLines(): List<WarningLine> = filter { it.message.isNotBlank() }.map { WarningLine(it.code, it.message) }
+
+/** The warning regions as rectangles on the composed page, from their page-fraction boxes (Requirement 6.4). */
+fun List<PageWarning>.pageRects(): List<ShotRect> = filter { it.code in PageWarning.AREA_CODES }.flatMap { w ->
+    w.regions.mapNotNull { r ->
+        val b = r.bbox ?: return@mapNotNull null
+        ShotRect(b[0].toFloat().coerceIn(0f, 1f), b[1].toFloat().coerceIn(0f, 1f), b[2].toFloat().coerceIn(0f, 1f), b[3].toFloat().coerceIn(0f, 1f), w.code)
+    }
+}
+
+/** Parses `shots_outline` as the server sends it: shot id to a list of `[x, y]` page fractions; anything else is skipped. */
+fun parseOutlines(json: String): Map<String, List<Pair<Float, Float>>> {
+    val root = try { lenient.parseToJsonElement(json) } catch (e: Exception) { return emptyMap() }
+    val o = root as? JsonObject ?: return emptyMap()
+    return o.mapNotNull { (id, v) ->
+        val pts = (v as? JsonArray)?.mapNotNull { p ->
+            val xy = (p as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.doubleOrNull }
+            if (xy != null && xy.size == 2) xy[0].toFloat() to xy[1].toFloat() else null
+        } ?: return@mapNotNull null
+        if (pts.size >= 3) id to pts else null
+    }.toMap()
+}
+
 /** The first of [shotIds] that one of the warnings' regions has a box in, or null (Requirement 4.4). */
 fun List<PageWarning>.firstShotWithBox(shotIds: List<String>): String? {
     val boxed = filter { it.code in PageWarning.AREA_CODES }.flatMap { w -> w.regions.flatMap { it.shotBoxes.keys } }.toSet()
@@ -151,6 +180,9 @@ fun shotsShowing(region: WarningRegion, shotIds: List<String>): List<String> = s
 internal fun JsonElement.asWarningsJson(): String = lenient.encodeToString(JsonElement.serializer(), this)
 
 internal fun warningsJsonOf(elements: List<JsonElement>): String = JsonArray(elements).asWarningsJson()
+
+internal fun outlinesJsonOf(outlines: Map<String, List<List<Double>>>): String =
+    JsonObject(outlines.mapValues { (_, pts) -> JsonArray(pts.map { p -> JsonArray(p.map { JsonPrimitive(it) }) }) }).asWarningsJson()
 
 /** Raw warnings as a JSON element, for the few places that want them unparsed. */
 internal fun warningsElement(json: String): JsonElement? = try { lenient.parseToJsonElement(json) } catch (e: Exception) { null }

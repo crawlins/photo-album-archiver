@@ -44,10 +44,10 @@ import org.bit63.albumarchiver.ui.ShotThumbnail
 
 fun shotsLabel(count: Int) = if (count == 1) "1 shot" else "$count shots"
 
-/** Every page of the album with its number, first shot and shot count (Requirement 11.6). */
+/** Every page of the album with its number, first shot and shot count (Requirement 11.6); a tap opens the page view (overlap coverage Requirement 6.3). */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-fun PageOverviewScreen(albumId: String, openReview: (albumId: String, pageId: String, index: Int) -> Unit, back: () -> Unit) {
+fun PageOverviewScreen(albumId: String, openPage: (albumId: String, pageId: String) -> Unit, back: () -> Unit) {
     val container = LocalContainer.current
     val vm: PageOverviewViewModel = viewModel(key = "overview-$albumId") {
         PageOverviewViewModel(
@@ -58,7 +58,6 @@ fun PageOverviewScreen(albumId: String, openReview: (albumId: String, pageId: St
     val cells by vm.cells.collectAsStateWithLifecycle()
     val warned by vm.warnedPages.collectAsStateWithLifecycle()
     val feedback by vm.feedbackByPage.collectAsStateWithLifecycle()
-    val reviewIndex by vm.reviewIndexByPage.collectAsStateWithLifecycle()
     val name by vm.albumName.collectAsStateWithLifecycle()
     val pageLoads by vm.loader.pages.collectAsStateWithLifecycle()
     val networkReturns by container.networkReturns.count.collectAsStateWithLifecycle()
@@ -91,7 +90,7 @@ fun PageOverviewScreen(albumId: String, openReview: (albumId: String, pageId: St
                     Modifier
                         .padding(6.dp)
                         .combinedClickable(
-                            onClick = { openReview(albumId, page.id, reviewIndex[page.id] ?: 0) },
+                            onClick = { openPage(albumId, page.id) },
                             onLongClick = { toDelete = page },
                         )
                         .testTag("page:${page.position}"),

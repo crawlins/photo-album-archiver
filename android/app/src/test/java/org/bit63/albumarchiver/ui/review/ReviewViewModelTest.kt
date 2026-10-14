@@ -219,14 +219,14 @@ class ReviewViewModelTest {
         assertThat(env.repo.album(albumId)!!.targetPageId).isEqualTo(pageIds[0])
     }
 
-    @Test fun `the overview opens a warned page at its first shot that shows a warning`() = blocking {
+    @Test fun `the overview marks a warned page`() = blocking {
         album(2, 3)
         env.repo.saveFeedback(listOf(PageFeedback(pageIds[1], albumId, "done", null, singleCoverage, env.clock.instant())))
         uploaded()
         val overview = vms.create { PageOverviewViewModel(env.repo, pageLoader, shotFetcher, albumId) }
         overview.warnedPages.await { it.isNotEmpty() }
         assertThat(overview.warnedPages.value).containsExactly(pageIds[1])
-        val index = overview.reviewIndexByPage.await { it[pageIds[1]] == 1 }  // p2s2
-        assertThat(index[pageIds[0]] ?: 0).isEqualTo(0)
+        val fb = overview.feedbackByPage.await { pageIds[1] in it }
+        assertThat(fb[pageIds[1]]!!.warnings.single().code).isEqualTo("single_coverage")
     }
 }

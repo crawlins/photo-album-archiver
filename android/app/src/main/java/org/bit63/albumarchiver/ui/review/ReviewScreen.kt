@@ -78,7 +78,15 @@ private sealed interface ReviewDialog {
  * zoom, and "Delete shot" / "Delete page".
  */
 @Composable
-fun ReviewScreen(albumId: String, pageId: String, index: Int, back: () -> Unit, toOverview: () -> Unit, toCapture: () -> Unit = back) {
+fun ReviewScreen(
+    albumId: String,
+    pageId: String,
+    index: Int,
+    back: () -> Unit,
+    toOverview: () -> Unit,
+    toCapture: () -> Unit = back,
+    toPageView: ((albumId: String, pageId: String) -> Unit)? = null,
+) {
     val container = LocalContainer.current
     val vm: ReviewViewModel = viewModel(key = "review-$albumId-$pageId-$index") {
         ReviewViewModel(
@@ -167,6 +175,10 @@ fun ReviewScreen(albumId: String, pageId: String, index: Int, back: () -> Unit, 
             val label = if (current == null) "" else if (count == 0) "Page ${current.position}" else
                 "Page ${current.position}, shot ${(pos.index.coerceIn(0, count - 1)) + 1} of $count"
             Text(label, color = Color.White, modifier = Modifier.weight(1f).testTag("reviewLabel"))
+            // The composed page with every shot's outline (overlap coverage Requirement 6.3).
+            if (toPageView != null && current != null) {
+                TextButton(onClick = { toPageView(albumId, current.id) }, modifier = Modifier.testTag("toPage")) { Text("Page", color = Color.White) }
+            }
             Box {
                 IconButton(onClick = { menu = true }, modifier = Modifier.testTag("reviewMenu")) {
                     Icon(Icons.Default.MoreVert, contentDescription = "More", tint = Color.White)

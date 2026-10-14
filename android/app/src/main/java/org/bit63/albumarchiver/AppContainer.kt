@@ -18,6 +18,7 @@ import org.bit63.albumarchiver.upload.LastPageLoadWorker
 import org.bit63.albumarchiver.upload.LastPageLoader
 import org.bit63.albumarchiver.upload.NetworkReturns
 import org.bit63.albumarchiver.upload.PageLoader
+import org.bit63.albumarchiver.upload.PreviewFetcher
 import org.bit63.albumarchiver.upload.ServerAccess
 import org.bit63.albumarchiver.upload.ShotFetcher
 import org.bit63.albumarchiver.upload.ThumbFetcher
@@ -52,6 +53,8 @@ open class AppContainer(
     val pageLoader by lazy { PageLoader(repository, server) }
     val shotFetcher by lazy { ShotFetcher(repository, shotStore, server) }
     val thumbFetcher = ThumbFetcher(thumbDir, server)
+    /** Composed-page previews, beside the thumbnails in the cache (overlap coverage spec, Requirement 6). */
+    val previewFetcher = PreviewFetcher(File(thumbDir.parentFile ?: thumbDir, "previews"), server)
     /** Page feedback from the server's album status (overlap coverage spec). */
     val feedbackPoller by lazy { FeedbackPoller(repository, server, clock) }
     val lastPageLoader by lazy { LastPageLoader(repository, pageLoader, shotFetcher) }

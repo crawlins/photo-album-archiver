@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.launch
 import org.bit63.albumarchiver.data.AlbumRepository
 import org.bit63.albumarchiver.data.PageFeedback
+import org.bit63.albumarchiver.data.outlinesJsonOf
 import org.bit63.albumarchiver.data.warningsJsonOf
 import java.time.Clock
 
@@ -48,7 +49,10 @@ class FeedbackPoller(
         val now = clock.instant()
         repo.saveFeedback(
             status.pages.filter { it.id in known }.map {
-                PageFeedback(it.id, albumId, it.state, it.lastRun, warningsJsonOf(it.warnings), now)
+                PageFeedback(
+                    it.id, albumId, it.state, it.lastRun, warningsJsonOf(it.warnings), now,
+                    preview = it.preview, outlinesJson = outlinesJsonOf(it.outlines),
+                )
             },
         )
         return true

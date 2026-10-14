@@ -22,7 +22,6 @@ import kotlinx.coroutines.withContext
 import org.bit63.albumarchiver.data.AlbumRepository
 import kotlinx.coroutines.flow.distinctUntilChanged
 import org.bit63.albumarchiver.upload.FeedbackPoller
-import org.bit63.albumarchiver.data.firstShotWithBox
 import org.bit63.albumarchiver.data.PageWarning
 import org.bit63.albumarchiver.data.PageFeedback
 import org.bit63.albumarchiver.data.Page
@@ -114,14 +113,6 @@ class PageOverviewViewModel(
         .map { rows -> rows.associateBy { it.pageId } }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
 
-    /** Where a tap on a page's tile opens the review: the first shot that shows one of its warnings, else the first shot (Requirement 4.4). */
-    val reviewIndexByPage: StateFlow<Map<String, Int>> = combine(feedbackByPage, repo.observeAlbumShots(albumId)) { fb, shots ->
-        val byPage = shots.groupBy { it.pageId }
-        fb.mapValues { (pageId, feedback) ->
-            val ids = byPage[pageId].orEmpty().map { it.id }
-            feedback.warnings.firstShotWithBox(ids)?.let { ids.indexOf(it) } ?: 0
-        }
-    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
 
     val albumName: StateFlow<String> = repo.observeAlbum(albumId).map { it?.name ?: "" }
         .stateIn(viewModelScope, SharingStarted.Eagerly, "")
