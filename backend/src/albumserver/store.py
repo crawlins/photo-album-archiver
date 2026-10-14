@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterator
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 SCHEMA = """
 CREATE TABLE album (
     id TEXT PRIMARY KEY,
@@ -49,6 +49,8 @@ CREATE TABLE page (
     output TEXT,
     print_path TEXT,
     warnings TEXT,
+    preview_path TEXT,
+    outlines TEXT,
     UNIQUE (album_id, position)
 );
 CREATE INDEX page_state ON page (state);
@@ -155,6 +157,21 @@ class Store:
             c.executescript(f"BEGIN IMMEDIATE;\n{SCHEMA}\nPRAGMA user_version={SCHEMA_VERSION};\nCOMMIT;")
         elif version > SCHEMA_VERSION:
             raise RuntimeError(f"{self.path}: index version {version} is newer than this server ({SCHEMA_VERSION})")
+        elif version < SCHEMA_VERSION:
+            self._migrate(c, version)
+
+    @staticmethod
+    def _migrate(c: sqlite3.Connection, version: int) -> None:
+        """Brings an older index up to ``SCHEMA_VERSION``, one version at a time."""
+        steps = {
+            # 2: the composed page's preview and each shot's outline on it (overlap coverage spec, task 6).
+            1: "ALTER TABLE page ADD COLUMN preview_path TEXT;\nALTER TABLE page ADD COLUMN outlines TEXT;",
+        }
+        script = "BEGIN IMMEDIATE;\n"
+        for v in range(version, SCHEMA_VERSION):
+            script += steps[v] + "\n"
+        script += f"PRAGMA user_version={SCHEMA_VERSION};\nCOMMIT;"
+        c.executescript(script)
 
     # -- connections and transactions -------------------------------------
 
@@ -398,7 +415,7 @@ class Store:
             if empty:
                 # Nothing left to process: the page's outputs go now rather than
                 # after a run that could only fail.
-                c.execute("UPDATE page SET output = NULL, print_path = NULL, warnings = NULL, last_error = NULL WHERE id = ?", (page_id,))
+                c.execute("UPDATE page SET output = NULL, print_path = NULL, warnings = NULL, preview_path = NULL, outlines = NULL, last_error = NULL WHERE id = ?", (page_id,))
                 c.execute("UPDATE album SET pdf_stale = 1 WHERE id = ?", (album_id,))
         return Removed(album_id, [], [shot_id], outputs_dropped=empty)
 
@@ -455,7 +472,7 @@ class Store:
             emptied = [pid for pid in sources if c.execute("SELECT 1 FROM shot WHERE page_id = ?", (pid,)).fetchone() is None]
             for pid in emptied:
                 # As when a page's last shot is deleted: nothing is left to process.
-                c.execute("UPDATE page SET output = NULL, print_path = NULL, warnings = NULL, last_error = NULL WHERE id = ?", (pid,))
+                c.execute("UPDATE page SET output = NULL, print_path = NULL, warnings = NULL, preview_path = NULL, outlines = NULL, last_error = NULL WHERE id = ?", (pid,))
             c.execute("UPDATE album SET updated = ?, pdf_stale = CASE WHEN ? THEN 1 ELSE pdf_stale END WHERE id = ?", (now, bool(emptied), album_id))
         return Moved(album_id, page_id, moves, emptied)
 
@@ -552,6 +569,8 @@ class Store:
         error: str | None,
         print_path: str | None = None,
         warnings: list | None = None,
+        preview_path: str | None = None,
+        outlines: dict | None = None,
     ) -> tuple[str, str | None]:
         """Record a finished run; returns (outcome, output folder to delete).
 
@@ -580,13 +599,13 @@ class Store:
             if has_shots:
                 c.execute("UPDATE album SET pdf_stale = 1 WHERE id = ?", (claim.album_id,))
             if output is None and has_shots and error and not moved:
-                c.execute("UPDATE page SET output = NULL, print_path = NULL, warnings = NULL WHERE id = ?", (claim.page_id,))
+                c.execute("UPDATE page SET output = NULL, print_path = NULL, warnings = NULL, preview_path = NULL, outlines = NULL WHERE id = ?", (claim.page_id,))
                 return "failed", p["output"]
             if output is None or not has_shots:
                 return "discarded", output
             c.execute(
-                "UPDATE page SET output = ?, print_path = ?, warnings = ? WHERE id = ?",
-                (output, print_path, json.dumps(warnings or []), claim.page_id),
+                "UPDATE page SET output = ?, print_path = ?, warnings = ?, preview_path = ?, outlines = ? WHERE id = ?",
+                (output, print_path, json.dumps(warnings or []), preview_path, json.dumps(outlines or {}), claim.page_id),
             )
         return "adopted", p["output"] if p["output"] != output else None
 
@@ -644,7 +663,7 @@ class Store:
             if a is None:
                 return None
             pages = c.execute(
-                f"""SELECT id, state, last_run, last_error, warnings, print_path, output, {_HAS_SHOTS} AS has_shots
+                f"""SELECT id, state, last_run, last_error, warnings, print_path, preview_path, outlines, output, {_HAS_SHOTS} AS has_shots
                     FROM page WHERE album_id = ? ORDER BY position""",
                 (album_id,),
             ).fetchall()
@@ -658,7 +677,15 @@ class Store:
         out = []
         for i, p in enumerate(pages, 1):
             state = p["state"] if p["has_shots"] else "empty"
-            e = {"id": p["id"], "number": i, "state": state, "last_run": p["last_run"], "warnings": json.loads(p["warnings"] or "[]")}
+            e = {
+                "id": p["id"],
+                "number": i,
+                "state": state,
+                "last_run": p["last_run"],
+                "warnings": json.loads(p["warnings"] or "[]"),
+                "preview": bool(p["preview_path"]),
+                "outlines": json.loads(p["outlines"] or "{}"),
+            }
             if p["state"] == "failed" and p["last_error"]:
                 e["error"] = p["last_error"]
             out.append(e)
@@ -668,6 +695,11 @@ class Store:
         with self._read() as c:
             r = c.execute("SELECT print_path FROM page WHERE id = ? AND album_id = ?", (page_id, album_id)).fetchone()
         return r["print_path"] if r else None
+
+    def page_preview(self, album_id: str, page_id: str) -> str | None:
+        with self._read() as c:
+            r = c.execute("SELECT preview_path FROM page WHERE id = ? AND album_id = ?", (page_id, album_id)).fetchone()
+        return r["preview_path"] if r else None
 
     def pdf_built(self, album_id: str) -> str | None:
         with self._read() as c:

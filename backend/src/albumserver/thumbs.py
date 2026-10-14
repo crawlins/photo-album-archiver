@@ -72,3 +72,16 @@ def make_thumb(src: Path, dst: Path) -> None:
         buf = io.BytesIO()
         im.save(buf, "JPEG", quality=THUMB_QUALITY)
     write_atomic(dst, buf.getvalue())
+
+
+PREVIEW_MAX_SIDE = 1500
+
+
+def make_preview(src: Path, dst: Path, max_side: int = PREVIEW_MAX_SIDE) -> None:
+    """A JPEG copy of a composed page with its long side at most ``max_side``, for the phone's page view."""
+    with Image.open(src) as im:
+        im = ImageOps.exif_transpose(im).convert("RGB")
+        im.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=85, optimize=True)
+    write_atomic(dst, buf.getvalue())

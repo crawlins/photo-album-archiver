@@ -89,10 +89,10 @@ page on the phone) is a backend commit and an app commit after those.
     - _Requirements: 4.1 to 4.12_
 
 - [ ] 6. The composed page on the phone
-  - [ ] 6.1 `shots_outline` in the page metadata, for the flat and the bent
+  - [x] 6.1 `shots_outline` in the page metadata, for the flat and the bent
     path; tests with a known homography.
     - _Requirements: 6.1_
-  - [ ] 6.2 Worker writes the 1500 px `preview.jpg`; store and status carry
+  - [x] 6.2 Worker writes the 1500 px `preview.jpg`; store and status carry
     it; `GET .../pages/{pageId}/preview`; the worker rekeys
     `shots_outline` by shot id; tests.
     - _Requirements: 6.2_

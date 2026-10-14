@@ -36,6 +36,7 @@ from typing import Callable, Protocol
 from .config import Settings
 from .files import Layout, remove_tree, write_atomic
 from .store import Claim, Store, utcnow
+from .thumbs import make_preview
 
 log = logging.getLogger("albumserver")
 
@@ -117,6 +118,23 @@ class ProcessRunner:
 
     def start(self, work: Path, out: Path) -> PageRun:
         return ProcessRun(self.ctx, self.target, work, out)
+
+
+PREVIEW_NAME = "preview.jpg"
+
+
+def _outlines_by_id(outlines: dict, photos: list) -> dict:
+    """The page step's ``shots_outline`` keyed by shot id instead of input index."""
+    ids = [Path(str(p)).stem for p in photos]
+    out = {}
+    for k, v in outlines.items():
+        try:
+            i = int(k)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= i < len(ids) and isinstance(v, list):
+            out[ids[i]] = v
+    return out
 
 
 def _shot_boxes_by_id(warnings: list, photos: list) -> list:
@@ -247,18 +265,24 @@ class Worker:
             out = self.layout.album(claim.album_id) / act.output
             secs = time.monotonic() - act.started
             if ok:
-                print_path, warnings = None, []
+                print_path, warnings, preview_path, outlines = None, [], None, {}
                 try:
                     report = json.loads((out / "report.json").read_text())
                     entry = report["pages"][0]
+                    photos = entry.get("photos", [])
                     if entry["status"] == "failed":
                         error = entry.get("error") or "the album step failed"
                     elif entry.get("print"):
                         print_path = f"{act.output}/{entry['print']}"
-                    warnings = _shot_boxes_by_id(entry.get("warnings", []), entry.get("photos", []))
+                    warnings = _shot_boxes_by_id(entry.get("warnings", []), photos)
+                    outlines = _outlines_by_id((entry.get("page_report") or {}).get("shots_outline") or {}, photos)
+                    if not error and entry.get("processed"):
+                        # A small copy of the composed page for the phone's page view (overlap coverage spec, Requirement 6.2).
+                        make_preview(out / entry["processed"], out / PREVIEW_NAME)
+                        preview_path = f"{act.output}/{PREVIEW_NAME}"
                 except (OSError, ValueError, KeyError, IndexError, TypeError) as e:
                     error = f"no usable report from the album step: {e}"
-                outcome, old = self.store.finish_run(claim, act.output, error, print_path, warnings)
+                outcome, old = self.store.finish_run(claim, act.output, error, print_path, warnings, preview_path, outlines)
             else:
                 outcome, old = self.store.finish_run(claim, None, error)
             if outcome != "adopted":

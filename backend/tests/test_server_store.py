@@ -226,3 +226,18 @@ def test_check_on_empty_data_folder(tmp_path):
     s = Store(layout.index)
     assert check(layout, s.snapshot()).ok
     s.close()
+
+
+def test_an_index_from_version_1_gains_the_preview_and_outline_columns(settings, clock):
+    from albumserver.store import SCHEMA_VERSION, Store
+
+    store = Store(settings.data_dir / "index.db", clock, settings.max_pages, settings.max_shots)
+    c = store._conn()
+    c.executescript("ALTER TABLE page DROP COLUMN preview_path; ALTER TABLE page DROP COLUMN outlines; PRAGMA user_version=1;")
+    store.close()
+    reopened = Store(settings.data_dir / "index.db", clock, settings.max_pages, settings.max_shots)
+    c = reopened._conn()
+    assert c.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+    columns = {r[1] for r in c.execute("PRAGMA table_info(page)")}
+    assert {"preview_path", "outlines"} <= columns
+    reopened.close()

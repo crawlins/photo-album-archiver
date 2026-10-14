@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from albumproc.regions import QualityParams, attach_shot_boxes, find_regions, glare_regions, page_warnings, shot_box, single_coverage_regions, uncovered_regions
+from albumproc.regions import QualityParams, attach_shot_boxes, find_regions, glare_regions, page_warnings, shot_box, shot_outline, single_coverage_regions, uncovered_regions
 
 GRID = (100, 200)  # h, w
 PAGE = (2000, 1000)  # composed page w, h
@@ -230,3 +230,25 @@ def test_single_coverage_warning_messages_and_regions():
     (w,) = page_warnings({"fraction": 0.0, "per_shot": {}, "regions": []}, NONE, [], three)
     assert w["message"].startswith("Only one photo covers the top-left corner and 2 other areas (50.0% of the page). Take another shot of those parts")
     assert page_warnings({"fraction": 0.0, "per_shot": {}, "regions": []}, NONE, [], {"fraction": 0.004, "regions": []}) == []
+
+
+def test_shot_outline_is_the_mask_s_contour_in_page_fractions():
+    m = _mask((20, 10, 120, 60))  # columns 20..119, rows 10..59 of a 200 x 100 grid
+    pts = shot_outline(m)
+    assert len(pts) == 4
+    xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+    assert min(xs) == pytest.approx(20 / 199, abs=1e-3) and max(xs) == pytest.approx(119 / 199, abs=1e-3)
+    assert min(ys) == pytest.approx(10 / 99, abs=1e-3) and max(ys) == pytest.approx(59 / 99, abs=1e-3)
+    assert shot_outline(np.zeros(GRID, bool)) == []
+    whole = shot_outline(np.ones(GRID, bool))
+    assert len(whole) == 4 and all(0 <= x <= 1 and 0 <= y <= 1 for x, y in whole)
+
+
+def test_shot_outline_follows_a_slanted_shot_with_few_points():
+    yy, xx = np.mgrid[0:100, 0:200]
+    m = (xx + yy * 0.5 > 60) & (xx + yy * 0.5 < 160)  # a parallelogram
+    pts = shot_outline(m)
+    assert 4 <= len(pts) <= 64
+    # The point in the parallelogram's corner region, not a bounding box.
+    assert any(abs(x - 60 / 199) < 0.02 and y < 0.05 for x, y in pts)
+    assert any(abs(x - (160 - 50) / 199) < 0.03 and y > 0.95 for x, y in pts)
