@@ -119,6 +119,29 @@ class ProcessRunner:
         return ProcessRun(self.ctx, self.target, work, out)
 
 
+def _shot_boxes_by_id(warnings: list, photos: list) -> list:
+    """The album step's warnings with each region's ``shot_boxes`` keyed by shot id instead of input index.
+
+    The page step numbers shots by their position in the page's photo list,
+    which the album report gives as ``photos`` (paths named by shot id); the
+    app knows shots by id only.
+    """
+    ids = [Path(str(p)).stem for p in photos]
+    out = []
+    for w in warnings:
+        if isinstance(w, dict) and isinstance(w.get("regions"), list):
+            w = dict(w)
+            regions = []
+            for r in w["regions"]:
+                if isinstance(r, dict) and isinstance(r.get("shot_boxes"), dict):
+                    r = dict(r)
+                    r["shot_boxes"] = {(ids[int(k)] if 0 <= int(k) < len(ids) else str(k)): v for k, v in r["shot_boxes"].items()}
+                regions.append(r)
+            w["regions"] = regions
+        out.append(w)
+    return out
+
+
 @dataclass
 class _Active:
     claim: Claim
@@ -232,7 +255,7 @@ class Worker:
                         error = entry.get("error") or "the album step failed"
                     elif entry.get("print"):
                         print_path = f"{act.output}/{entry['print']}"
-                    warnings = entry.get("warnings", [])
+                    warnings = _shot_boxes_by_id(entry.get("warnings", []), entry.get("photos", []))
                 except (OSError, ValueError, KeyError, IndexError, TypeError) as e:
                     error = f"no usable report from the album step: {e}"
                 outcome, old = self.store.finish_run(claim, act.output, error, print_path, warnings)
