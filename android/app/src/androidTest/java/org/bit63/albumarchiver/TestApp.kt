@@ -9,6 +9,8 @@ import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.junit4.ComposeTestRule
 import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
@@ -142,3 +144,11 @@ fun SemanticsNodeInteraction.textOf(): String =
     fetchSemanticsNode().config.let { c ->
         c.getOrNull(androidx.compose.ui.semantics.SemanticsProperties.Text)?.joinToString { it.text } ?: ""
     }
+
+/** Opens page [n]'s review from the overview: the tile opens the page view first (overlap coverage spec), "Shot" goes on to the review. */
+fun ComposeTestRule.openPageReview(n: Int) {
+    onNodeWithTag("page:$n").performClick()
+    waitForTag("toShot")
+    onNodeWithTag("toShot").performClick()
+    waitForTag("reviewLabel")
+}

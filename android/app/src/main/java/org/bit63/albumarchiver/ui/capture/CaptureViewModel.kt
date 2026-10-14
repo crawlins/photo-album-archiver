@@ -86,13 +86,19 @@ class CaptureViewModel(
         if (id == null) flowOf(null) else repo.observeAlbum(id)
     }
 
-    private val page: Flow<Page?> = album.flatMapLatest { a ->
-        if (a == null) flowOf(null) else repo.observeTargetPage(a.id)
+    /**
+     * The target page and the last page, from one read of the album's pages,
+     * so the two never disagree for a moment between two emissions (which
+     * would make "Next page" read as a return to the last page).
+     */
+    private val targetAndLast: Flow<Pair<Page?, Page?>> = album.flatMapLatest { a ->
+        if (a == null) flowOf(null to null) else combine(repo.observeAlbum(a.id), repo.observePages(a.id)) { al, ps ->
+            val last = ps.lastOrNull()
+            (ps.firstOrNull { it.id == al?.targetPageId } ?: last) to last
+        }
     }
 
-    private val lastPage: Flow<Page?> = album.flatMapLatest { a ->
-        if (a == null) flowOf(null) else repo.observeLastPage(a.id)
-    }
+    private val page: Flow<Page?> = targetAndLast.map { it.first }.distinctUntilChanged { a, b -> a?.id == b?.id && a?.shotCount == b?.shotCount }
 
     /** The album's pages marked with a red dot (overlap coverage Requirement 4.3). */
     val warnedPages: StateFlow<Set<String>> = album.flatMapLatest { a ->
@@ -108,7 +114,7 @@ class CaptureViewModel(
     }
 
     val state: StateFlow<CaptureState> = combine(
-        combine(album, page, lastPage, warnedPages) { a, p, last, warned -> Quad(a, p, last, p != null && p.id in warned) },
+        combine(album, targetAndLast, warnedPages) { a, (p, last), warned -> Quad(a, p, last, p != null && p.id in warned) },
         shots, pending,
         combine(settings.server, settings.authRejected) { s, rejected -> (s != null) to rejected },
     ) { (a, p, last, warned), s, n, (configured, rejected) ->
