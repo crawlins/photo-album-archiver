@@ -245,9 +245,15 @@ so that changes can be judged and regressions caught.
 1. THE synthetic generator SHALL produce a sleeve-like glare style (long,
    wrinkled streaks with a soft veil and a clipped core) in addition to the
    existing spots, and SHALL keep its per-shot ground-truth glare mask.
-2. WHEN tested on synthetic stitched pages, where most of the page is covered
-   by one shot, THE detector SHALL find at least 80% of the residual glare area
-   and SHALL report no more than 0.2% of glare-free page area as glare.
+2. ~~WHEN tested on synthetic stitched pages, where most of the page is
+   covered by one shot, THE detector SHALL find at least 80% of the residual
+   glare area and SHALL report no more than 0.2% of glare-free page area as
+   glare.~~ Replaced by the overlap coverage spec
+   (`.kiro/specs/overlap-coverage/`, Requirement 2): neither detector reaches
+   this on real pages (0.2% and 10% of the glare found, see that spec's
+   introduction), so the project guarantees two shots over every part of a
+   page instead, and the detectors' recall is recorded and held as a
+   regression floor, not required.
 3. WHEN tested on synthetic full-page cases where merging removes the glare,
    THE system SHALL report no `glare` warning.
 4. WHEN tested on a glare-free synthetic page that includes white print

@@ -113,6 +113,15 @@ may change how `fuse.py` blends.
 
 ## Notes from the implementation
 
+- Requirement 9.2's targets were not reached by the hand-made detector
+  (below) nor by a small CNN fine-tuned on 15 of Clark's real pages with
+  overlap-comparison labels (PR #22, `tools/train_glare_net.py`): on nine
+  held-out real pages the CNN finds 10% of the glare the overlap comparison
+  finds, with false alarms on 0.01% of the clean area; the hand-made detector
+  finds 0.2%. What is missed is mostly a veil over a large part of the page,
+  which one photo cannot tell from the page's lighting. The target is
+  replaced by `.kiro/specs/overlap-coverage/`.
+
 - The accuracy targets in Requirement 9.2 and the testing strategy (recall
   0.8 to 0.85 at 0.2% false positives) were not reached. From one photo,
   faint sleeve sheen looks much like pale print content, white borders and
