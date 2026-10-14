@@ -80,6 +80,10 @@ data class PageStatus(
     @SerialName("last_run") val lastRun: String? = null,
     val warnings: List<JsonElement> = emptyList(),
     val error: String? = null,
+    /** Whether the server holds a preview of the composed page (overlap coverage spec, Requirement 6.2). */
+    val preview: Boolean = false,
+    /** Each shot's outline on the composed page, in page fractions, by shot id. */
+    val outlines: Map<String, List<List<Double>>> = emptyMap(),
 )
 
 @Serializable
@@ -163,6 +167,12 @@ class ServerClient(
 
     suspend fun deleteShot(albumId: String, pageId: String, shotId: String): ApiResult<Unit> =
         call(request(url("albums", albumId, "pages", pageId, "shots", shotId).build()).delete().build()) { }
+
+    /** Opens the composed page's preview (long side 1500 px); 404 before the page has been processed. */
+    suspend fun getPagePreview(albumId: String, pageId: String): ApiResult<Download> =
+        call(request(url("albums", albumId, "pages", pageId, "preview").build()).get().build(), closeOnSuccess = false) {
+            Download(it.body.byteStream(), it.header(SHA_HEADER), it)
+        }
 
     /** Opens a shot's JPEG; with [thumb], the server's preview of at most 320 px. */
     suspend fun getShot(albumId: String, pageId: String, shotId: String, thumb: Boolean = false): ApiResult<Download> {

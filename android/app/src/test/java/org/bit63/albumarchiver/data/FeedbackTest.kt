@@ -78,4 +78,18 @@ class FeedbackTest {
         assertThat(w.firstShotWithBox(listOf("s3"))).isNull()
         assertThat(parseWarnings("[$dropped]").firstShotWithBox(listOf("s1"))).isNull()
     }
+
+    @Test fun `page rectangles, plain lines and outlines for the page view`() {
+        val w = parseWarnings("[$single,$glare,$uncovered,$dropped]")
+        val rects = w.pageRects()
+        assertThat(rects.map { it.code }).containsExactly("single_coverage", "glare", "incomplete_coverage").inOrder()
+        assertThat(rects[0]).isEqualTo(ShotRect(0.62f, 0f, 1f, 1f, "single_coverage"))
+        assertThat(w.plainLines().map { it.text }).containsExactly(w[0].message, w[1].message, w[2].message, w[3].message).inOrder()
+        val outlines = parseOutlines("""{"a":[[0,0],[1,0],[1,1]],"b":[[0,0],[1,1]],"c":"x","d":[[0,0,0],[1,0],[1,1],[0,1]]}""")
+        assertThat(outlines.keys).containsExactly("a", "d")
+        assertThat(outlines["a"]).containsExactly(0f to 0f, 1f to 0f, 1f to 1f).inOrder()
+        assertThat(outlines["d"]).hasSize(3)
+        assertThat(parseOutlines("[]")).isEmpty()
+        assertThat(parseOutlines("nope")).isEmpty()
+    }
 }

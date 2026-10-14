@@ -68,6 +68,9 @@ class FakeAlbumServer : Dispatcher() {
     /** How many status requests have been answered. */
     @Volatile var statusRequests = 0
 
+    /** Per page id, the preview JPEG to serve; pages without one get 404. */
+    val previews = ConcurrentHashMap<String, ByteArray>()
+
     fun start() = apply { server.start() }
     override fun shutdown() {
         // Idle keep-alive connections would make MockWebServer wait for them.
@@ -115,6 +118,8 @@ class FakeAlbumServer : Dispatcher() {
             seg.size == 2 && seg[0] == "albums" -> albumRequest(request, seg[1])
             seg.size == 3 && seg[0] == "albums" && seg[2] == "status" && request.method == "GET" -> statusRequest(seg[1])
             seg.size == 4 && seg[0] == "albums" && seg[2] == "pages" -> pageRequest(request, seg[1], seg[3])
+            seg.size == 5 && seg[0] == "albums" && seg[2] == "pages" && seg[4] == "preview" && request.method == "GET" ->
+                previews[seg[3]]?.let { MockResponse().setResponseCode(200).addHeader("Content-Type", "image/jpeg").setBody(Buffer().write(it)) } ?: status(404)
             seg.size == 5 && seg[0] == "albums" && seg[2] == "pages" && seg[4] == "move" && request.method == "POST" ->
                 moveRequest(request, seg[1], seg[3])
             seg.size == 6 && seg[0] == "albums" && seg[2] == "pages" && seg[4] == "shots" ->

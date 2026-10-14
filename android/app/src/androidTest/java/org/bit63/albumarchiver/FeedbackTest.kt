@@ -75,6 +75,8 @@ class FeedbackTest {
         compose.waitForTag("pageDot:1")
         compose.onAllNodesWithTag("pageDot:2").assertCountEquals(0)
         compose.onNodeWithTag("page:1").performClick()
+        compose.waitForTag("toShot")  // the page view first (no preview yet, so the first photo stands in)
+        compose.onNodeWithTag("toShot").performClick()
         compose.waitForTag("warningsBar")
         // Opened at the shot that shows the area, with the rectangle on it and the message under it.
         compose.onNodeWithTag("reviewLabel").assertTextContains("Page 1, shot 2 of 2")
@@ -89,7 +91,7 @@ class FeedbackTest {
         compose.onNodeWithTag("pageNumber").performClick()
         compose.waitForTag("pageDot:1")
         compose.onNodeWithTag("page:1").performClick()
-        compose.waitForTag("addShots")
+        compose.waitForTag("addShots")  // the page view's own warnings bar
         compose.onNodeWithTag("addShots").performClick()
         compose.waitForTag("shutter")
         compose.waitUntil(5000) { runCatching { compose.onNodeWithTag("pageNumber").assertTextContains("Page 1") }.isSuccess }
