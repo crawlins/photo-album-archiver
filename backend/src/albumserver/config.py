@@ -35,7 +35,7 @@ class Settings(BaseModel):
     tls_cert: Path | None = None
     tls_key: Path | None = None
     max_body_mb: float = Field(50, gt=0)
-    idle_period_s: float = Field(30, ge=0)
+    idle_period_s: float = Field(10, ge=0)  # short, so a page's feedback reaches the phone while the user is still at it
     workers: int = Field(1, ge=1)
     cancel_runs: bool = False
     max_pages: int = Field(500, ge=1)

@@ -191,8 +191,10 @@ working through the album and I never run anything by hand.
    SHALL make the changed page ready for processing at once, because the user
    has moved on to the next page and the app has already uploaded the earlier
    page's shots.
-3. WHEN a changed page has had no further change for the idle period (30
-   seconds by default), THE server SHALL make it ready for processing.
+3. WHEN a changed page has had no further change for the idle period (10
+   seconds by default; 30 before the overlap coverage spec shortened it so
+   that a page's feedback reaches the phone while the user is still at the
+   page), THE server SHALL make it ready for processing.
 4. WHEN a page is processed, THE server SHALL run the album step on a one-page
    album folder holding that page's photos and an `album.json` with the
    album's title and page size, producing the page's processed page, print

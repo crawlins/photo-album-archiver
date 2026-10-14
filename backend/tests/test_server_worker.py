@@ -34,6 +34,8 @@ class FakeRun:
             (self.out / "print").mkdir(parents=True, exist_ok=True)  # as the album step does
             im.save(self.out / "print" / "001-page.jpg", "JPEG", dpi=(150, 150))
             entry.update(print="print/001-page.jpg", bleed_px=0, warnings=[dict(w) for w in warnings])
+            if getattr(self, "photos_in_report", False):
+                entry["photos"] = [f"page/{name}" for name in self.photos]
         (self.out / "report.json").write_text(json.dumps({"dpi": 150, "pages": [entry]}))
         self.result = (True, None)
 
@@ -90,7 +92,7 @@ def test_page_runs_after_idle_period_not_before(api, worker, runner, clock):
     a = _album_with_shots(api, [p])
     worker.step()
     assert runner.runs == [] and _page_state(api, a, 1) == "changed"
-    clock.advance(29.9)
+    clock.advance(9.9)
     worker.step()
     assert runner.runs == []
     clock.advance(0.1)
@@ -102,12 +104,12 @@ def test_page_runs_after_idle_period_not_before(api, worker, runner, clock):
 def test_each_new_shot_restarts_the_idle_period(api, worker, runner, clock):
     p = new_id()
     a = _album_with_shots(api, [p])
-    clock.advance(20)
+    clock.advance(7)
     api.put_shot(a, p, new_id(), make_jpeg(50))
-    clock.advance(20)
+    clock.advance(7)
     worker.step()
     assert runner.runs == []
-    clock.advance(10)
+    clock.advance(3)
     worker.step()
     assert len(runner.runs) == 1
 
@@ -141,7 +143,7 @@ def test_oldest_ready_first_within_the_worker_limit(api, worker, runner, clock):
     for p in (p1, p3, p2):  # page 3 is shot before page 2
         api.put_shot(a, p, new_id(), make_jpeg(1))
         clock.advance(1)
-    clock.advance(27)
+    clock.advance(7)
     worker.step()
     names = lambda: [r.manifest["pages"][0]["name"] for r in runner.runs]  # noqa: E731
     assert names() == ["Page 1"]
@@ -575,3 +577,19 @@ def test_status_404_for_unknown_album(api):
     assert api.get(f"/albums/{new_id()}/status").status_code == 404
     assert api.get(f"/albums/{new_id()}/pdf").status_code == 404
     assert api.get(f"/albums/{new_id()}/pages/{new_id()}/print").status_code == 404
+
+
+def test_status_keys_each_region_s_shot_boxes_by_shot_id(api, worker, runner, clock):
+    a = _album_with_shots(api, [new_id()])
+    clock.advance(30)
+    worker.step()
+    run = runner.runs[0]
+    first, second = run.photos[0][:-4], run.photos[1][:-4]  # "<shot id>.jpg", in the album step's order
+    region = {"bbox": [0.6, 0, 1, 1], "location": "right", "shots": [1], "shot_boxes": {"0": [0, 0, 10, 10], "1": [2210, 0, 4080, 3072], "7": [1, 2, 3, 4]}}
+    run.photos_in_report = True
+    run.finish(warnings=[{"code": "single_coverage", "fraction": 0.31, "locations": ["right"], "regions": [region], "message": "m"}, {"code": "photos_dropped", "photos": [2], "message": "d"}])
+    worker.step()
+    (page,) = api.get(f"/albums/{a}/status").json()["pages"]
+    sc, dropped = page["warnings"]
+    assert sc["regions"][0]["shot_boxes"] == {first: [0, 0, 10, 10], second: [2210, 0, 4080, 3072], "7": [1, 2, 3, 4]}
+    assert dropped == {"code": "photos_dropped", "photos": [2], "message": "d"}

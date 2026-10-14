@@ -13,7 +13,7 @@ def test_defaults():
     assert s.port == 8080
     assert s.max_body_mb == 50
     assert s.max_body_bytes == 50 * 1024 * 1024
-    assert s.idle_period_s == 30
+    assert s.idle_period_s == 10
     assert s.workers == 1
     assert s.cancel_runs is False
     assert s.max_pages == 500
@@ -24,11 +24,11 @@ def test_defaults():
 
 def test_file_then_environment(tmp_path):
     cfg = tmp_path / "albumserver.toml"
-    cfg.write_text('data_dir = "/srv/albums"\nport = 9000\nidle_period_s = 10\ncancel_runs = true\n')
+    cfg.write_text('data_dir = "/srv/albums"\nport = 9000\nidle_period_s = 45\ncancel_runs = true\n')
     s = load_settings(cfg, environ={"ALBUMSERVER_PORT": "9100", "ALBUMSERVER_WORKERS": "2", "UNRELATED": "x"})
     assert s.data_dir == Path("/srv/albums")
     assert s.port == 9100  # environment wins
-    assert s.idle_period_s == 10
+    assert s.idle_period_s == 45
     assert s.workers == 2
     assert s.cancel_runs is True
 

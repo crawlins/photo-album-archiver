@@ -19,7 +19,7 @@ max_body_mb = 50
 
 # A page is processed once it has had no new or deleted shot for this long,
 # or at once when the app moves on to a later page.
-idle_period_s = 30
+idle_period_s = 10
 
 # Page runs at a time. Each can use 1 to 2 GB of memory.
 workers = 1
