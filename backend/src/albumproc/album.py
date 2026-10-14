@@ -233,10 +233,18 @@ def _write_json(path: Path, obj) -> None:
 
 
 def _page_warnings(page_report: dict, threshold: float) -> list[dict]:
-    w = []
-    if page_report["coverage"] < threshold:
+    """The page's own warnings (glare, coverage, single coverage, curvature), passed through whole.
+
+    The album's coverage threshold adds an ``incomplete_coverage`` warning
+    when the page step raised none (its regions are filtered by area, the
+    threshold is on the total) and a ``photos_dropped`` one for an old
+    report without warnings.
+    """
+    w = [dict(x) for x in page_report.get("warnings", []) if isinstance(x, dict)]
+    codes = {x.get("code") for x in w}
+    if page_report["coverage"] < threshold and "incomplete_coverage" not in codes:
         w.append(asdict(PageWarning("incomplete_coverage", f"photos cover only {page_report['coverage']:.1%} of the page")))
-    if page_report["dropped"]:
+    if page_report["dropped"] and "photos_dropped" not in codes:
         w.append(asdict(PageWarning("photos_dropped", f"photos {page_report['dropped']} matched no other photo and were not used")))
     return w
 

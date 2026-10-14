@@ -60,7 +60,7 @@ def _cmd_page(a) -> int:
         max_side=a.max_side,
         focal_35mm=a.focal_35mm or None,
         glare=GlareParams(detector=a.detector),
-        quality=QualityParams(residual_threshold=a.glare_threshold, min_region_area=a.min_region),
+        quality=QualityParams(residual_threshold=a.glare_threshold, min_region_area=a.min_region, min_single_area=a.min_single_area),
         curvature=_curvature_params(a),
     )
     res = process_page(images, opt, debug_dir=a.debug)
@@ -76,6 +76,7 @@ def _cmd_page(a) -> int:
             glare = cv2.resize(res.residual_glare, (w, h), interpolation=cv2.INTER_LINEAR)
             _write_image(a.output.with_suffix(".glare.png"), (glare * 255 + 0.5).clip(0, 255).astype("uint8"))
             _write_image(a.output.with_suffix(".uncovered.png"), (~res.coverage).astype("uint8") * 255)
+            _write_image(a.output.with_suffix(".single.png"), res.single_coverage.astype("uint8") * 255)
         meta.parent.mkdir(parents=True, exist_ok=True)
         _write_atomic(meta, (text + "\n").encode())
     except OSError as e:
@@ -273,11 +274,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("photos", nargs="+", type=Path)
     p.add_argument("-o", "--output", type=Path, required=True)
     p.add_argument("--report", type=Path, help="write the page metadata (JSON) here instead of next to the image")
-    p.add_argument("--masks", action="store_true", help="also write PAGE.glare.png and PAGE.uncovered.png")
+    p.add_argument("--masks", action="store_true", help="also write PAGE.glare.png, PAGE.uncovered.png and PAGE.single.png")
     p.add_argument("--debug", type=Path, help="write intermediate images to this folder")
     p.add_argument("--glare-threshold", type=float, default=0.5, help="residual glare counted as glare (0-1)")
     p.add_argument("--detector", choices=["features", "net"], default="features", help="single-photo glare detector: hand-made features (default) or the learned model")
     p.add_argument("--min-region", type=float, default=0.0005, help="smallest region reported, as a fraction of the page")
+    p.add_argument("--min-single-area", type=float, default=0.01, help="smallest single-covered area warned about, as a fraction of the page")
     p.add_argument("--max-side", type=int, default=8000, help="cap on output long side (px)")
     p.add_argument("--focal-35mm", type=float, default=26.0, help="35 mm-equivalent focal length of the camera (0 = estimate)")
     curvature_args(p)

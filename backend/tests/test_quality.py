@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from albumproc.regions import QualityParams, find_regions, glare_regions, page_warnings, uncovered_regions
+from albumproc.regions import QualityParams, attach_shot_boxes, find_regions, glare_regions, page_warnings, shot_box, single_coverage_regions, uncovered_regions
 
 GRID = (100, 200)  # h, w
 PAGE = (2000, 1000)  # composed page w, h
@@ -126,9 +126,10 @@ def test_glare_warning_for_one_single_shot_region():
     assert w == {
         "code": "glare",
         "fraction": 0.0412,
-        "regions": 1,
         "single_shot": 1,
+        "all_shots_glared": 0,
         "location": "bottom-left",
+        "regions": [{"location": "bottom-left", "cause": "single_shot"}],
         "message": "Glare remains on 4.1% of the page in 1 area (bottom-left). It was seen by only one photo; add a shot of that area from a different angle.",
     }
 
@@ -142,7 +143,7 @@ def test_glare_warning_advice_by_cause():
     (w,) = page_warnings(_g("single_shot", "single_shot"), NONE, [])
     assert "Each was seen by only one photo; add shots of those areas from a different angle." in w["message"]
     (w,) = page_warnings(_g("all_shots_glared", "single_shot", "single_shot"), NONE, [])
-    assert w["single_shot"] == 2
+    assert w["single_shot"] == 2 and w["all_shots_glared"] == 1
     assert "2 of them were seen by only one photo" in w["message"]
     assert "change the light or the camera angle for those" in w["message"]
 
@@ -155,10 +156,77 @@ def test_coverage_and_dropped_warnings():
     w = page_warnings({"fraction": 0.0, "per_shot": {}, "regions": []}, unc, [2])
     assert [x["code"] for x in w] == ["incomplete_coverage", "photos_dropped"]
     assert w[0]["message"] == "1.3% of the page is not in any photo (top-left corner, right edge, centre)."
-    assert w[0]["regions"] == 3 and w[0]["locations"] == ["top-left", "right", "centre"]
+    assert len(w[0]["regions"]) == 3 and w[0]["locations"] == ["top-left", "right", "centre"]
+    assert w[0]["regions"][0] == {"location": "top-left", "edges": ["top", "left"]}
     assert w[1] == {"code": "photos_dropped", "photos": [2], "message": "Photo 2 matched no other photo and was not used."}
     assert page_warnings({"fraction": 0.0, "regions": []}, NONE, [1, 4])[0]["message"] == "Photos 1, 4 matched no other photo and were not used."
 
 
 def test_no_warnings_for_a_clean_page():
     assert page_warnings({"fraction": 0.0, "per_shot": {}, "regions": []}, NONE, []) == []
+
+
+def test_single_coverage_regions_are_each_shot_s_own_part():
+    left, right = _shots()  # overlap in columns 80..120
+    count = left.astype(np.uint8) + right
+    regions = single_coverage_regions(count, [3, 5], [left, right], PAGE, QualityParams())
+    assert [r.shots for r in regions] == [[3], [5]]  # equal areas: top-left first
+    assert regions[0].bbox == (0.0, 0.0, 0.4, 1.0) and regions[1].bbox == (0.6, 0.0, 1.0, 1.0)
+    assert regions[0].edges == ["top", "bottom", "left"] and regions[1].edges == ["top", "right", "bottom"]
+    assert all(r.cause is None and r.severity is None for r in regions)
+
+
+def test_single_coverage_ignores_the_seam_and_small_patches():
+    whole = np.ones(GRID, bool)
+    left, right = np.zeros(GRID, bool), np.zeros(GRID, bool)
+    left[:, :98], right[:, 100:] = True, True
+    count = whole.astype(np.uint8) + left + right  # 1 only along columns 98-99: a seam
+    assert single_coverage_regions(count, [0, 1, 2], [whole, left, right], PAGE, QualityParams()) == []
+    small = np.zeros(GRID, bool)
+    small[10:20, 10:25] = True  # 150 px = 0.75% of the page: under min_single_area, over min_region_area
+    assert single_coverage_regions(small.astype(np.uint8), [0], [small], PAGE, QualityParams()) == []
+    assert len(single_coverage_regions(small.astype(np.uint8), [0], [small], PAGE, QualityParams(min_single_area=0.005))) == 1
+
+
+def test_one_shot_is_one_single_coverage_region_of_the_whole_page():
+    whole = np.ones(GRID, bool)
+    (r,) = single_coverage_regions(whole.astype(np.uint8), [7], [whole], PAGE, QualityParams())
+    assert r.bbox == (0.0, 0.0, 1.0, 1.0) and r.area == 1.0 and r.shots == [7]
+    assert r.edges == ["top", "right", "bottom", "left"]
+
+
+def test_shot_box_under_identity_and_affine_maps_and_outside_the_shot():
+    identity = lambda pts: pts  # noqa: E731
+    assert shot_box((100, 200, 300, 400), identity, (1000, 1000)) == (100, 200, 300, 400)
+    half = lambda pts: np.asarray(pts) * 0.5 + 10  # noqa: E731
+    assert shot_box((100, 200, 300, 400), half, (1000, 1000)) == (60, 110, 160, 210)
+    assert shot_box((100, 200, 300, 400), half, (100, 100)) == (60, 99, 99, 99) or shot_box((100, 200, 300, 400), half, (100, 100)) is None
+    assert shot_box((100, 200, 300, 400), identity, (50, 50)) is None  # wholly outside
+    assert shot_box((100, 200, 300, 400), identity, (200, 1000)) == (100, 200, 199, 400)  # clipped
+    nan = lambda pts: np.full_like(np.asarray(pts, float), np.nan)  # noqa: E731
+    assert shot_box((100, 200, 300, 400), nan, (1000, 1000)) is None
+
+
+def test_attach_shot_boxes_keys_by_input_index_and_skips_shots_the_box_misses():
+    (r, _), = find_regions(_mask((10, 10, 30, 20)), PAGE, 0.0005)  # bbox_px (100, 100, 300, 200)
+    shift = lambda pts: np.asarray(pts) - [250, 0]  # noqa: E731
+    attach_shot_boxes([r], [2, 9], [lambda pts: pts, shift], [(2000, 1000), (2000, 1000)])
+    assert r.shot_boxes == {2: (100, 100, 300, 200), 9: (0, 100, 50, 200)}
+    attach_shot_boxes([r], [2], [lambda pts: np.asarray(pts) - [400, 0]], [(2000, 1000)])
+    assert r.shot_boxes == {}
+    assert r.to_dict()["shot_boxes"] == {}
+
+
+def test_single_coverage_warning_messages_and_regions():
+    one = {"fraction": 0.3104, "regions": [{"location": "right", "edges": ["right"], "shots": [1], "shot_boxes": {1: (2210, 0, 4080, 3072)}, "area": 0.31}]}
+    (w,) = page_warnings({"fraction": 0.0, "per_shot": {}, "regions": []}, NONE, [], one)
+    assert w["code"] == "single_coverage" and w["fraction"] == 0.3104 and w["locations"] == ["right"]
+    assert w["regions"] == [{"location": "right", "edges": ["right"], "shots": [1], "shot_boxes": {1: (2210, 0, 4080, 3072)}}]
+    assert w["message"] == (
+        "Only one photo covers the right edge (31.0% of the page)."
+        " Take another shot of that part from a different angle so that glare there can be removed."
+    )
+    three = {"fraction": 0.5, "regions": [{"location": "top-left", "edges": ["top", "left"]}, {"location": "centre", "edges": []}, {"location": "bottom", "edges": ["bottom"]}]}
+    (w,) = page_warnings({"fraction": 0.0, "per_shot": {}, "regions": []}, NONE, [], three)
+    assert w["message"].startswith("Only one photo covers the top-left corner and 2 other areas (50.0% of the page). Take another shot of those parts")
+    assert page_warnings({"fraction": 0.0, "per_shot": {}, "regions": []}, NONE, [], {"fraction": 0.004, "regions": []}) == []

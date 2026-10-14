@@ -13,10 +13,10 @@ from .curvature import CurvatureFit, CurvatureParams, PageSurface, fit_page, fla
 from .fuse import WEIGHT_MAX_SIDE, FuseParams, fuse
 from .glare import GlareParams, adapt_bias, combine, glare_features, glare_map, net_map, residual, weak_threshold
 from .page import PageQuad, detect_pages, estimate_aspect, focal_px_from_35mm
-from .regions import QualityParams, glare_regions, page_warnings, uncovered_regions
+from .regions import QualityParams, attach_shot_boxes, glare_regions, page_warnings, single_coverage_regions, uncovered_regions
 from .register import register
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 PREVIEW_MAX_SIDE = 3000
 MAP_STEP = 8  # flattening maps of curved pages are computed every this many output px
@@ -55,6 +55,7 @@ class PageReport:
     schema_version: int = SCHEMA_VERSION
     glare: dict = field(default_factory=lambda: {"fraction": 0.0, "per_shot": {}, "regions": []})  # residual glare
     uncovered: dict = field(default_factory=lambda: {"fraction": 0.0, "regions": []})
+    single_coverage: dict = field(default_factory=lambda: {"fraction": 0.0, "regions": []})  # covered by exactly one shot
     warnings: list[dict] = field(default_factory=list)
     detector: dict = field(default_factory=dict)  # glare and quality parameters, bias used
     curvature: dict = field(default_factory=dict)  # see _curvature_report
@@ -70,6 +71,7 @@ class PageResult:
     corners_ref: np.ndarray  # page corners in the reference photo's full-res pixels
     residual_glare: np.ndarray | None = None  # float32 0..1 on the detector's grid
     coverage: np.ndarray | None = None  # bool, full resolution: pixel covered by at least one shot
+    single_coverage: np.ndarray | None = None  # bool, full resolution: pixel covered by exactly one shot
     surface: PageSurface | None = None  # the bent page model, when the page was treated as curved
 
 
@@ -211,8 +213,10 @@ def process_page(images: list[np.ndarray], options: PageOptions | None = None, d
 
         # 3. Warp every full-res photo straight into the page rectangle (one
         #    resampling step), then fuse there.
-        out_w, out_m = _warp_all([images[i] for i in used], [P @ reg.homographies[i] for i in used], (W, H))
+        page_H = [P @ reg.homographies[i] for i in used]
+        out_w, out_m = _warp_all([images[i] for i in used], page_H, (W, H))
         result = fuse(out_w, out_m, preview.tone_reference, opt.fuse)
+        mappers = [_homography_mapper(np.linalg.inv(Hp)) for Hp in page_H]
     else:
         # A bent page: one resampling of each shot through the flattening
         # map, after a correction for the parallax in the bent strip.
@@ -229,8 +233,11 @@ def process_page(images: list[np.ndarray], options: PageOptions | None = None, d
         out_w, out_m = _remap_all([images[i] for i in used], maps, (W, H), MAP_STEP)
         result = fuse(out_w, out_m, preview.tone_reference, opt.fuse)
         corners_ref = surface.project(np.array([0, 1, 1, 0.0]), np.array([0, 0, 1, 1.0])).astype(np.float32)
+        mappers = [_map_mapper(m, MAP_STEP) for m in maps]
 
-    quality = _assess(result, used, reg.dropped, (W, H), opt)
+    single_full = np.sum([m.astype(np.uint8) for m in out_m], axis=0) == 1
+    del out_w
+    quality = _assess(result, used, reg.dropped, (W, H), opt, mappers, [images[i].shape[1::-1] for i in used])
     report = PageReport(
         n_inputs=len(images),
         reference=ref,
@@ -246,6 +253,7 @@ def process_page(images: list[np.ndarray], options: PageOptions | None = None, d
         gains={i: [round(float(x), 3) for x in g] for i, g in zip(used, result.gains)},
         glare=quality.glare,
         uncovered=quality.uncovered,
+        single_coverage=quality.single,
         warnings=quality.warnings,
         detector=quality.detector,
     )
@@ -260,7 +268,28 @@ def process_page(images: list[np.ndarray], options: PageOptions | None = None, d
         if fit is not None:
             _write_curvature_debug(Path(debug_dir), preview.image, to_canvas, fit, images[ref], used, alignments, (W, H), opt.inset)
 
-    return PageResult(result.image, report, corners_ref, quality.residual, result.coverage, surface)
+    return PageResult(result.image, report, corners_ref, quality.residual, result.coverage, single_full, surface)
+
+
+def _homography_mapper(H_page_to_shot: np.ndarray):
+    """Page-frame points to a shot's pixels through a homography."""
+
+    def to_shot(pts: np.ndarray) -> np.ndarray:
+        return cv2.perspectiveTransform(np.asarray(pts, np.float64).reshape(-1, 1, 2), H_page_to_shot).reshape(-1, 2)
+
+    return to_shot
+
+
+def _map_mapper(coarse: np.ndarray, step: int):
+    """Page-frame points to a shot's pixels through its coarse flattening map (node k at k * step)."""
+
+    def to_shot(pts: np.ndarray) -> np.ndarray:
+        p = np.asarray(pts, np.float32).reshape(-1, 2) / step
+        x = cv2.remap(coarse[..., 0], p[:, 0].reshape(1, -1), p[:, 1].reshape(1, -1), cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+        y = cv2.remap(coarse[..., 1], p[:, 0].reshape(1, -1), p[:, 1].reshape(1, -1), cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+        return np.stack([x.ravel(), y.ravel()], 1)
+
+    return to_shot
 
 
 def _steep(surface: PageSurface, shot_H: list[np.ndarray], shapes: list[tuple[int, int]], cp: CurvatureParams) -> dict:
@@ -345,18 +374,21 @@ def _curvature_warnings(cp: CurvatureParams, fit: CurvatureFit | None, steep: di
 class _Quality:
     glare: dict
     uncovered: dict
+    single: dict
     warnings: list[dict]
     detector: dict
     residual: np.ndarray
     maps: list  # per used shot: GlareMap, or None with the detector off
 
 
-def _assess(result, used: list[int], dropped: list[int], size: tuple[int, int], opt: PageOptions) -> _Quality:
-    """Glare left in the composed page, uncovered area, and the warnings.
+def _assess(result, used: list[int], dropped: list[int], size: tuple[int, int], opt: PageOptions, mappers=None, shot_sizes=None) -> _Quality:
+    """Glare left in the composed page, uncovered and single-covered area, and the warnings.
 
     Runs on the grid of ``fuse``'s weights. Each shot's own glare map is
     combined with the comparison against the other shots, then weighted by
-    the share each shot had in every composed pixel.
+    the share each shot had in every composed pixel. ``mappers`` take
+    page-frame points into each used shot's pixels, for the regions' shot
+    boxes; without them no boxes are attached.
     """
     gp, q = opt.glare, opt.quality
     masks = result.masks_small
@@ -376,17 +408,25 @@ def _assess(result, used: list[int], dropped: list[int], size: tuple[int, int], 
         per = [np.zeros(grid, np.float32) for _ in used]
         res = np.zeros(grid, np.float32)
     covered = count > 0
+
+    def boxed(regions):
+        return [r.to_dict() for r in (attach_shot_boxes(regions, used, mappers, shot_sizes) if mappers is not None else regions)]
+
     glare = {
         "fraction": round(float((res[covered] >= q.residual_threshold).mean()) if covered.any() else 0.0, 4),
         "per_shot": {i: round(float((g[m] >= q.residual_threshold).mean()) if m.any() else 0.0, 4) for i, g, m in zip(used, per, masks)},
-        "regions": [r.to_dict() for r in glare_regions(res, count, used, masks, size, q)],
+        "regions": boxed(glare_regions(res, count, used, masks, size, q)),
     }
     uncovered = {
         "fraction": round(1.0 - float(result.coverage.mean()), 4),
-        "regions": [r.to_dict() for r in uncovered_regions(result.coverage, size, q, grid)],
+        "regions": boxed(uncovered_regions(result.coverage, size, q, grid)),
+    }
+    single = {
+        "fraction": round(float((count[covered] == 1).mean()) if covered.any() else 0.0, 4),
+        "regions": boxed(single_coverage_regions(count, used, masks, size, q)),
     }
     detector = {"bias": round(float(bias), 4), "bias_adapted": adapted, "glare": asdict(gp), "quality": asdict(q)}
-    return _Quality(glare, uncovered, page_warnings(glare, uncovered, dropped), detector, res, maps)
+    return _Quality(glare, uncovered, single, page_warnings(glare, uncovered, dropped, single), detector, res, maps)
 
 
 def _touch(q: np.ndarray, valid: np.ndarray) -> float:
@@ -448,7 +488,7 @@ def _write_debug(d: Path, preview, quad, to_canvas, result, used, quality: _Qual
         img = cv2.cvtColor((g.score * 255).astype(np.uint8), cv2.COLOR_GRAY2BGR)
         img[g.glare > 0] = (0, 0, 255)
         cv2.imwrite(str(d / f"glare_{i:02d}.png"), img)
-    cv2.imwrite(str(d / "quality_overlay.jpg"), quality_overlay(result.image, quality.glare["regions"], quality.uncovered["regions"]))
+    cv2.imwrite(str(d / "quality_overlay.jpg"), quality_overlay(result.image, quality.glare["regions"], quality.uncovered["regions"], quality.single["regions"]))
 
 
 def _write_curvature_debug(d: Path, mosaic, to_canvas, fit: CurvatureFit, reference, used, alignments, size, inset):
@@ -495,11 +535,11 @@ def _write_curvature_debug(d: Path, mosaic, to_canvas, fit: CurvatureFit, refere
         cv2.imwrite(str(d / f"align_{i:02d}.png"), cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR))
 
 
-def quality_overlay(image: np.ndarray, glare_regions: list[dict], uncovered_regions: list[dict]) -> np.ndarray:
-    """The composed page with glare regions boxed in magenta and uncovered ones in cyan, numbered."""
+def quality_overlay(image: np.ndarray, glare_regions: list[dict], uncovered_regions: list[dict], single_regions: list[dict] = ()) -> np.ndarray:
+    """The composed page with glare regions boxed in magenta, uncovered ones in cyan and single-covered ones in yellow, numbered."""
     vis = image.copy()
     t = max(2, round(max(image.shape[:2]) / 600))
-    for regions, colour in ((glare_regions, (255, 0, 255)), (uncovered_regions, (255, 255, 0))):
+    for regions, colour in ((glare_regions, (255, 0, 255)), (uncovered_regions, (255, 255, 0)), (single_regions, (0, 255, 255))):
         for k, r in enumerate(regions):
             x0, y0, x1, y1 = r["bbox_px"]
             cv2.rectangle(vis, (x0, y0), (x1, y1), colour, t)

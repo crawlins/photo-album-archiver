@@ -1,12 +1,15 @@
-"""Regions of residual glare and of uncovered page, and the page's warnings.
+"""Regions of residual glare, of uncovered page and of single coverage, and the page's warnings.
 
-Both kinds of region are found on the detector's low-resolution grid and
+All three kinds of region are found on the detector's low-resolution grid and
 reported in page fractions and in composed-page pixels, with a location word
-from a 3 x 3 grid, so that the capture app can say where to aim the next shot.
+from a 3 x 3 grid, so that the capture app can say where to aim the next
+shot. Each region also carries its box in every shot's own pixels
+(``shot_boxes``), so the app can outline it on a photo it holds.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 
 import cv2
@@ -25,7 +28,10 @@ class Region:
     shots: list[int] | None = None  # input indexes covering it (glare only)
     cause: str | None = None  # single_shot | all_shots_glared (glare only)
     severity: float | None = None  # mean residual glare (glare only)
-    edges: list[str] | None = None  # page edges it touches (uncovered only)
+    edges: list[str] | None = None  # page edges it touches (uncovered and single coverage)
+    # The region's box in each used shot's full-resolution pixels, by input
+    # index, for the shots its box falls into at all (see ``shot_boxes``).
+    shot_boxes: dict[int, tuple[int, int, int, int]] | None = None
 
     def to_dict(self) -> dict:
         return {k: v for k, v in asdict(self).items() if v is not None}
@@ -35,6 +41,10 @@ class Region:
 class QualityParams:
     residual_threshold: float = 0.5  # residual glare at or above this counts as glare
     min_region_area: float = 0.0005  # smaller regions are dropped (fraction of the page)
+    # Single-coverage regions smaller than this are dropped. Much larger than
+    # min_region_area: the seam between two overlapping shots always leaves a
+    # thin band only one of them covers, and that is not worth a warning.
+    min_single_area: float = 0.01
 
 
 def _location(cx: float, cy: float) -> str:
@@ -107,6 +117,69 @@ def uncovered_regions(coverage: np.ndarray, page_size: tuple[int, int], q: Quali
     return [r for r, _ in find_regions(uncovered_map(coverage, grid_shape), page_size, q.min_region_area)]
 
 
+def single_coverage_regions(
+    coverage_count: np.ndarray,
+    used: list[int],
+    shot_masks: list[np.ndarray],
+    page_size: tuple[int, int],
+    q: QualityParams,
+) -> list[Region]:
+    """Regions of the page exactly one shot covers, each with that shot.
+
+    Glare there cannot be removed by comparison, only detected. An opening
+    of 3 grid px first removes the band along the seam between overlapping
+    shots, which is single-covered but harmless.
+    """
+    single = cv2.morphologyEx((coverage_count == 1).astype(np.uint8), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8)) > 0
+    out = []
+    for region, m in find_regions(single, page_size, q.min_single_area):
+        overlap = [float((sm & m).sum()) for sm in shot_masks]
+        region.shots = [used[int(np.argmax(overlap))]] if any(overlap) else []
+        out.append(region)
+    return out
+
+
+ShotMapper = Callable[[np.ndarray], np.ndarray]  # page-frame (x, y) points -> the shot's own pixels
+
+
+def shot_box(bbox_px: tuple[int, int, int, int], to_shot: ShotMapper, shot_size: tuple[int, int]) -> tuple[int, int, int, int] | None:
+    """A page-frame box in one shot's pixels, clipped to the shot; None where the box misses the shot.
+
+    Points along the box's outline are mapped (a perspective map bends the
+    box's edges, so corners alone can cut it short) and their extent taken.
+    """
+    x0, y0, x1, y1 = bbox_px
+    t = np.linspace(0, 1, 9, dtype=np.float32)
+    outline = np.concatenate(
+        [np.stack([x0 + t * (x1 - x0), np.full_like(t, y0)], 1), np.stack([x0 + t * (x1 - x0), np.full_like(t, y1)], 1),
+         np.stack([np.full_like(t, x0), y0 + t * (y1 - y0)], 1), np.stack([np.full_like(t, x1), y0 + t * (y1 - y0)], 1)]
+    )
+    pts = np.asarray(to_shot(outline), np.float64).reshape(-1, 2)
+    pts = pts[np.isfinite(pts).all(axis=1)]
+    if len(pts) == 0:
+        return None
+    w, h = shot_size
+    bx0, by0 = np.floor(pts.min(axis=0))
+    bx1, by1 = np.ceil(pts.max(axis=0))
+    bx0, bx1 = int(max(bx0, 0)), int(min(bx1, w - 1))
+    by0, by1 = int(max(by0, 0)), int(min(by1, h - 1))
+    if bx1 <= bx0 or by1 <= by0:
+        return None
+    return bx0, by0, bx1, by1
+
+
+def attach_shot_boxes(regions: list[Region], used: list[int], mappers: list[ShotMapper], shot_sizes: list[tuple[int, int]]) -> list[Region]:
+    """Fill each region's ``shot_boxes`` for every used shot its box falls into."""
+    for r in regions:
+        boxes = {}
+        for i, to_shot, size in zip(used, mappers, shot_sizes):
+            b = shot_box(r.bbox_px, to_shot, size)
+            if b is not None:
+                boxes[i] = b
+        r.shot_boxes = boxes
+    return regions
+
+
 def _pct(f: float) -> str:
     return f"{f * 100:.1f}%"
 
@@ -120,33 +193,50 @@ def _place(r: dict) -> str:
     return f"{loc} edge" if r.get("edges") else loc
 
 
-def page_warnings(glare: dict, uncovered: dict, dropped: list[int]) -> list[dict]:
-    """Warnings for the page metadata, from its glare and uncovered summaries.
+def _carried(r: dict) -> dict:
+    """What a warning carries of a region: enough to draw and place it, without the page-frame detail."""
+    return {k: r[k] for k in ("bbox", "bbox_px", "location", "shots", "cause", "edges", "shot_boxes") if k in r}
 
-    The codes ``incomplete_coverage`` and ``photos_dropped`` mean the same as
-    in the album report, so the album step can pass these through.
+
+def page_warnings(glare: dict, uncovered: dict, dropped: list[int], single: dict | None = None) -> list[dict]:
+    """Warnings for the page metadata, from its glare, uncovered and single-coverage summaries.
+
+    Every warning about an area carries its ``regions``, so a reader of the
+    warnings alone (the app, through the server's status) can draw them. The
+    codes ``incomplete_coverage`` and ``photos_dropped`` mean the same as in
+    the album report, which passes page warnings through.
     """
     out = []
     regions = glare["regions"]
     if regions:
         n = len(regions)
-        single = sum(r["cause"] == "single_shot" for r in regions)
+        single_n = sum(r["cause"] == "single_shot" for r in regions)
         where = regions[0]["location"] if n == 1 else f"largest {regions[0]['location']}"
         msg = f"Glare remains on {_pct(glare['fraction'])} of the page in {n} area{'s' if n > 1 else ''} ({where})."
-        if single == n:
+        if single_n == n:
             msg += (
                 " It was seen by only one photo; add a shot of that area from a different angle."
                 if n == 1
                 else " Each was seen by only one photo; add shots of those areas from a different angle."
             )
-        elif single:
+        elif single_n:
             msg += (
-                f" {single} of them {'was' if single == 1 else 'were'} seen by only one photo; add shots of those areas from a different angle."
+                f" {single_n} of them {'was' if single_n == 1 else 'were'} seen by only one photo; add shots of those areas from a different angle."
                 " Every photo had glare on the rest; change the light or the camera angle for those."
             )
         else:
             msg += " Every photo had glare there; change the light or the camera angle for all the shots."
-        out.append({"code": "glare", "fraction": glare["fraction"], "regions": n, "single_shot": single, "location": regions[0]["location"], "message": msg})
+        out.append(
+            {
+                "code": "glare",
+                "fraction": glare["fraction"],
+                "single_shot": single_n,
+                "all_shots_glared": n - single_n,
+                "location": regions[0]["location"],
+                "regions": [_carried(r) for r in regions],
+                "message": msg,
+            }
+        )
     regions = uncovered["regions"]
     if regions:
         places = list(dict.fromkeys(_place(r) for r in regions))
@@ -154,9 +244,25 @@ def page_warnings(glare: dict, uncovered: dict, dropped: list[int]) -> list[dict
             {
                 "code": "incomplete_coverage",
                 "fraction": uncovered["fraction"],
-                "regions": len(regions),
                 "locations": [r["location"] for r in regions],
+                "regions": [_carried(r) for r in regions],
                 "message": f"{_pct(uncovered['fraction'])} of the page is not in any photo ({', '.join(places)}).",
+            }
+        )
+    regions = single["regions"] if single else []
+    if regions:
+        n = len(regions)
+        where = _place(regions[0]) if n == 1 else f"{_place(regions[0])} and {n - 1} other area{'s' if n > 2 else ''}"
+        out.append(
+            {
+                "code": "single_coverage",
+                "fraction": single["fraction"],
+                "locations": [r["location"] for r in regions],
+                "regions": [_carried(r) for r in regions],
+                "message": (
+                    f"Only one photo covers the {where} ({_pct(single['fraction'])} of the page)."
+                    f" Take another shot of {'that part' if n == 1 else 'those parts'} from a different angle so that glare there can be removed."
+                ),
             }
         )
     if dropped:

@@ -78,13 +78,21 @@ not), and warnings (`glare`, `incomplete_coverage`, `photos_dropped`,
  "message": "Glare remains on 4.1% of the page in 1 area (bottom-left). It was seen by only one photo; add a shot of that area from a different angle."}
 ```
 
+Glare is removed only where two shots overlap, so the page metadata also
+reports the part of the page only one photo reached, as a `single_coverage`
+warning with regions (the seam between two shots is ignored; the minimum is
+1% of the page, `--min-single-area`). A page shot once always gets it. Every
+warning about an area carries its regions, each with `shot_boxes`: the
+region's box in each photo's own pixels, so the capture app can outline on
+the photo where the next shot should go. That, not single-photo detection,
+is what the project relies on against glare.
+
 Known limit: the single-photo detector is cautious. Faint sleeve sheen looks
 much like pale print content, white borders and white paper in one photo, so
 it reports glare it is sure of and misses much of the faint kind (on synthetic
 stitched pages it finds roughly 5 to 10% of the leftover glare, with false
 alarms under 0.2% of the page; on real sleeved pages it finds almost none).
-Where shots overlap, the comparison between them still removes glare as
-before. Glare no shot sees past is reported, never painted over.
+Glare no shot sees past is reported, never painted over.
 
 A learned detector (`--detector net`, a small CNN run through OpenCV, about
 0.1 s per photo) was trained on 15 real album pages, labelled by comparing
@@ -94,9 +102,11 @@ about 10% of the glare the overlap comparison finds, with false alarms on
 0.01% of the clean area, where the default detector finds 0.2%. It is not
 the default because it flags white paper and print borders on synthetic
 pages, and because most of what it misses, a soft veil over much of a page,
-cannot be told from the page's own lighting in one photo. The spec's targets
-(80% found, 0.2% false alarms) are out of reach for either detector from a
-single photo.
+cannot be told from the page's own lighting in one photo. The glare spec's
+original targets (80% found, 0.2% false alarms) are out of reach for either
+detector from a single photo, and were replaced by the overlap coverage spec
+(`.kiro/specs/overlap-coverage/`): two shots over every part of a page,
+checked by the server and shown by the app.
 
 ### Use
 
@@ -104,7 +114,7 @@ single photo.
 cd backend
 python3 -m pip install -e '.[test]'
 albumproc page shot1.jpg shot2.jpg shot3.jpg -o page.png --debug debug/   # also writes page.json; debug/ gets curvature_outline.jpg, _profile.png, _grid.jpg, align_NN.png
-albumproc page shot*.jpg -o page.png --masks     # also page.glare.png and page.uncovered.png
+albumproc page shot*.jpg -o page.png --masks     # also page.glare.png, page.uncovered.png and page.single.png
 albumproc glare shot1.jpg --overlay checked/     # glare in single photos, before processing a page
 albumproc glare-eval page.json --truth drawn.png # score page.glare.png against a hand-drawn mask
 albumproc synth samples/ --kind glare -n 4      # synthetic test photos (glare, stitch, pair or clean_white)
@@ -286,7 +296,7 @@ Settings come from a TOML file (`--config`, see
 [`deploy/albumserver.toml`](backend/deploy/albumserver.toml)) and from
 `ALBUMSERVER_<NAME>` environment variables, which win. An unknown or invalid
 setting stops the server, naming it. The main ones: `data_dir`, `host`
-(`127.0.0.1`), `port` (8080), `tls_cert`/`tls_key`, `idle_period_s` (30),
+(`127.0.0.1`), `port` (8080), `tls_cert`/`tls_key`, `idle_period_s` (10),
 `workers` (1 page run at a time; each can use 1 to 2 GB), `cancel_runs`
 (false).
 
@@ -296,7 +306,7 @@ listing more than 500 pages; the checks are made in the same database
 transaction as the change, so concurrent uploads cannot exceed them.
 
 **Processing.** A page is processed when the app moves on to a later page, or
-after 30 seconds without a new or deleted shot. The page runs through the
+after 10 seconds without a new or deleted shot. The page runs through the
 album step on its own, in a separate process; once no page of the album is
 waiting, the album's PDF is rebuilt from every page's latest print image.
 `GET /api/v1/albums/{id}/status` shows each page's state, warnings and
