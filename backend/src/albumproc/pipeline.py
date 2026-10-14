@@ -13,7 +13,7 @@ from .curvature import CurvatureFit, CurvatureParams, PageSurface, fit_page, fla
 from .fuse import WEIGHT_MAX_SIDE, FuseParams, fuse
 from .glare import GlareParams, adapt_bias, combine, glare_features, glare_map, net_map, residual, weak_threshold
 from .page import PageQuad, detect_pages, estimate_aspect, focal_px_from_35mm
-from .regions import QualityParams, attach_shot_boxes, glare_regions, page_warnings, single_coverage_regions, uncovered_regions
+from .regions import QualityParams, attach_shot_boxes, glare_regions, page_warnings, shot_outline, single_coverage_regions, uncovered_regions
 from .register import register
 
 SCHEMA_VERSION = 3
@@ -56,6 +56,7 @@ class PageReport:
     glare: dict = field(default_factory=lambda: {"fraction": 0.0, "per_shot": {}, "regions": []})  # residual glare
     uncovered: dict = field(default_factory=lambda: {"fraction": 0.0, "regions": []})
     single_coverage: dict = field(default_factory=lambda: {"fraction": 0.0, "regions": []})  # covered by exactly one shot
+    shots_outline: dict[int, list[list[float]]] = field(default_factory=dict)  # per used shot, its outline on the page in page fractions
     warnings: list[dict] = field(default_factory=list)
     detector: dict = field(default_factory=dict)  # glare and quality parameters, bias used
     curvature: dict = field(default_factory=dict)  # see _curvature_report
@@ -254,6 +255,7 @@ def process_page(images: list[np.ndarray], options: PageOptions | None = None, d
         glare=quality.glare,
         uncovered=quality.uncovered,
         single_coverage=quality.single,
+        shots_outline=quality.outlines,
         warnings=quality.warnings,
         detector=quality.detector,
     )
@@ -375,6 +377,7 @@ class _Quality:
     glare: dict
     uncovered: dict
     single: dict
+    outlines: dict
     warnings: list[dict]
     detector: dict
     residual: np.ndarray
@@ -425,8 +428,9 @@ def _assess(result, used: list[int], dropped: list[int], size: tuple[int, int], 
         "fraction": round(float((count[covered] == 1).mean()) if covered.any() else 0.0, 4),
         "regions": boxed(single_coverage_regions(count, used, masks, size, q)),
     }
+    outlines = {i: shot_outline(m) for i, m in zip(used, masks)}
     detector = {"bias": round(float(bias), 4), "bias_adapted": adapted, "glare": asdict(gp), "quality": asdict(q)}
-    return _Quality(glare, uncovered, single, page_warnings(glare, uncovered, dropped, single), detector, res, maps)
+    return _Quality(glare, uncovered, single, outlines, page_warnings(glare, uncovered, dropped, single), detector, res, maps)
 
 
 def _touch(q: np.ndarray, valid: np.ndarray) -> float:

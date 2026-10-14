@@ -137,6 +137,11 @@ def test_glare_left_in_a_stitched_page_is_reported(sleeve_stitch):
         h, w_ = case.images[i].shape[:2]
         assert 0 <= x0 < x1 <= w_ - 1 and 0 <= y0 < y1 <= h - 1
         assert (x1 - x0) * (y1 - y0) > 0.3 * w_ * h
+    # Each shot's outline on the page: the left half's lies left of the right half's.
+    assert set(r.shots_outline) == set(r.used) and all(len(o) >= 4 for o in r.shots_outline.values())
+    assert all(0 <= x <= 1 and 0 <= y <= 1 for o in r.shots_outline.values() for x, y in o)
+    centres = sorted(float(np.mean([x for x, _ in r.shots_outline[i]])) for i in r.used)
+    assert centres[1] - centres[0] > 0.2
     assert res.single_coverage.shape == res.image.shape[:2]
     grid_single = cv2.resize(res.single_coverage.astype(np.float32), res.residual_glare.shape[::-1], interpolation=cv2.INTER_AREA) >= 0.5
     in_regions = np.zeros_like(grid_single)

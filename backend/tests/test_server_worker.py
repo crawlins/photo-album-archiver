@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+from pathlib import Path
 import os
 
 import pikepdf
@@ -36,6 +37,11 @@ class FakeRun:
             entry.update(print="print/001-page.jpg", bleed_px=0, warnings=[dict(w) for w in warnings])
             if getattr(self, "photos_in_report", False):
                 entry["photos"] = [f"page/{name}" for name in self.photos]
+            if getattr(self, "processed_in_report", False):
+                (self.out / "pages").mkdir(parents=True, exist_ok=True)
+                Image.new("RGB", (3000, 2000), colour).save(self.out / "pages" / "001-page.png", "PNG")
+                entry["processed"] = "pages/001-page.png"
+                entry["page_report"] = {"shots_outline": {"0": [[0, 0], [0.6, 0], [0.6, 1], [0, 1]], "1": [[0.4, 0], [1, 0], [1, 1], [0.4, 1]], "9": [[0, 0]]}}
         (self.out / "report.json").write_text(json.dumps({"dpi": 150, "pages": [entry]}))
         self.result = (True, None)
 
@@ -300,6 +306,8 @@ def test_failed_page_is_reported_and_left_out_of_the_pdf(api, worker, runner, cl
         "state": "done",
         "last_run": st["pages"][1]["last_run"],
         "warnings": [{"code": "photos_dropped", "message": "1 of 3 photos did not match"}],
+        "preview": False,
+        "outlines": {},
     }
     assert st["pdf"] == "current"
     pdf = pikepdf.open(io.BytesIO(api.get(f"/albums/{a}/pdf").content))
@@ -593,3 +601,25 @@ def test_status_keys_each_region_s_shot_boxes_by_shot_id(api, worker, runner, cl
     sc, dropped = page["warnings"]
     assert sc["regions"][0]["shot_boxes"] == {first: [0, 0, 10, 10], second: [2210, 0, 4080, 3072], "7": [1, 2, 3, 4]}
     assert dropped == {"code": "photos_dropped", "photos": [2], "message": "d"}
+
+
+def test_status_carries_the_page_preview_and_each_shot_s_outline_by_id(api, worker, runner, clock):
+    a = _album_with_shots(api, [new_id()])
+    (page,) = api.get(f"/albums/{a}/status").json()["pages"]
+    assert page["preview"] is False and page["outlines"] == {}
+    assert api.get(f"/albums/{a}/pages/{page['id']}/preview").status_code == 404
+    clock.advance(30)
+    worker.step()
+    run = runner.runs[0]
+    first, second = run.photos[0][:-4], run.photos[1][:-4]
+    run.photos_in_report = run.processed_in_report = True
+    run.finish()
+    worker.step()
+    (page,) = api.get(f"/albums/{a}/status").json()["pages"]
+    assert page["preview"] is True
+    assert page["outlines"] == {first: [[0, 0], [0.6, 0], [0.6, 1], [0, 1]], second: [[0.4, 0], [1, 0], [1, 1], [0.4, 1]]}
+    r = api.get(f"/albums/{a}/pages/{page['id']}/preview")
+    assert r.status_code == 200 and r.headers["content-type"] == "image/jpeg"
+    im = Image.open(io.BytesIO(r.content))
+    assert im.size == (1500, 1000)
+    assert (Path(run.out) / "preview.jpg").is_file()

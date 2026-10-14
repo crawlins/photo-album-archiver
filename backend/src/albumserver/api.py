@@ -449,6 +449,15 @@ def create_app(settings: Settings, store: Store | None = None, clock: Callable[[
             raise not_found("PDF")
         return FileResponse(path, media_type="application/pdf", filename="album.pdf")
 
+    @app.get(f"{api}/albums/{{album_id}}/pages/{{page_id}}/preview")
+    def preview_image(album_id: str, page_id: str):
+        aid, pid = _id(album_id, "album"), _id(page_id, "page")
+        rel = store.page_preview(aid, pid)
+        path = layout.album(aid) / rel if rel else None
+        if path is None or not path.is_file():
+            raise not_found("page preview")
+        return FileResponse(path, media_type="image/jpeg")
+
     @app.get(f"{api}/albums/{{album_id}}/pages/{{page_id}}/print")
     def print_image(album_id: str, page_id: str):
         aid, pid = _id(album_id, "album"), _id(page_id, "page")

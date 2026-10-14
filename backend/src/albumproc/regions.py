@@ -139,6 +139,26 @@ def single_coverage_regions(
     return out
 
 
+def shot_outline(mask: np.ndarray, max_points: int = 64) -> list[list[float]]:
+    """Where a shot lies on the page: the outline of its coverage mask on the grid, as page fractions.
+
+    The largest connected area's contour, simplified to about half a
+    percent of its length and thinned to at most ``max_points`` points; an
+    empty mask gives no points. Works the same for a flat page, where the
+    outline is the shot's frame through its homography, and for a bent
+    one, where it is whatever the flattening map covered.
+    """
+    gh, gw = mask.shape
+    contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return []
+    c = max(contours, key=cv2.contourArea)
+    c = cv2.approxPolyDP(c, 0.005 * cv2.arcLength(c, True), True).reshape(-1, 2)
+    if len(c) > max_points:
+        c = c[np.linspace(0, len(c) - 1, max_points).round().astype(int)]
+    return [[round(float(x) / max(gw - 1, 1), 4), round(float(y) / max(gh - 1, 1), 4)] for x, y in c]
+
+
 ShotMapper = Callable[[np.ndarray], np.ndarray]  # page-frame (x, y) points -> the shot's own pixels
 
 
