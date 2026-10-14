@@ -28,6 +28,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import org.bit63.albumarchiver.ui.WarningDot
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -46,12 +47,18 @@ fun shotsLabel(count: Int) = if (count == 1) "1 shot" else "$count shots"
 /** Every page of the album with its number, first shot and shot count (Requirement 11.6). */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-fun PageOverviewScreen(albumId: String, openReview: (albumId: String, pageId: String) -> Unit, back: () -> Unit) {
+fun PageOverviewScreen(albumId: String, openReview: (albumId: String, pageId: String, index: Int) -> Unit, back: () -> Unit) {
     val container = LocalContainer.current
     val vm: PageOverviewViewModel = viewModel(key = "overview-$albumId") {
-        PageOverviewViewModel(container.repository, container.pageLoader, container.shotFetcher, albumId)
+        PageOverviewViewModel(
+            container.repository, container.pageLoader, container.shotFetcher, albumId,
+            feedback = container.feedbackPoller, uploadRunning = container.uploadRunning,
+        )
     }
     val cells by vm.cells.collectAsStateWithLifecycle()
+    val warned by vm.warnedPages.collectAsStateWithLifecycle()
+    val feedback by vm.feedbackByPage.collectAsStateWithLifecycle()
+    val reviewIndex by vm.reviewIndexByPage.collectAsStateWithLifecycle()
     val name by vm.albumName.collectAsStateWithLifecycle()
     val pageLoads by vm.loader.pages.collectAsStateWithLifecycle()
     val networkReturns by container.networkReturns.count.collectAsStateWithLifecycle()
@@ -84,20 +91,28 @@ fun PageOverviewScreen(albumId: String, openReview: (albumId: String, pageId: St
                     Modifier
                         .padding(6.dp)
                         .combinedClickable(
-                            onClick = { openReview(albumId, page.id) },
+                            onClick = { openReview(albumId, page.id, reviewIndex[page.id] ?: 0) },
                             onLongClick = { toDelete = page },
                         )
                         .testTag("page:${page.position}"),
                 ) {
                     val thumbModifier = Modifier.fillMaxWidth().aspectRatio(0.77f).clip(RoundedCornerShape(6.dp))
                     val first = cell.firstShot
-                    when {
-                        first != null -> ShotThumbnail(first, thumbModifier)
-                        pageLoads[page.id] == LoadState.FAILED -> Placeholder("Couldn't load", thumbModifier)
-                        else -> Placeholder("", thumbModifier)
+                    Box {
+                        when {
+                            first != null -> ShotThumbnail(first, thumbModifier)
+                            pageLoads[page.id] == LoadState.FAILED -> Placeholder("Couldn't load", thumbModifier)
+                            else -> Placeholder("", thumbModifier)
+                        }
+                        // The red dot of a warned page (overlap coverage Requirement 4.3).
+                        if (page.id in warned) WarningDot(size = 12.dp, inset = 6.dp, tag = "pageDot:${page.position}")
                     }
                     Text("Page ${page.position}", style = MaterialTheme.typography.labelLarge)
-                    Text(shotsLabel(page.shotCount), style = MaterialTheme.typography.bodySmall)
+                    val state = feedback[page.id]?.state?.takeIf { it.isNotEmpty() && it != "done" }
+                    Text(
+                        if (state == null) shotsLabel(page.shotCount) else "${shotsLabel(page.shotCount)} · $state",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
                 }
             }
         }

@@ -13,6 +13,7 @@ import org.bit63.albumarchiver.data.SettingsStore
 import org.bit63.albumarchiver.data.ShotStore
 import org.bit63.albumarchiver.data.UploadKicker
 import org.bit63.albumarchiver.upload.AlbumImporter
+import org.bit63.albumarchiver.upload.FeedbackPoller
 import org.bit63.albumarchiver.upload.LastPageLoadWorker
 import org.bit63.albumarchiver.upload.LastPageLoader
 import org.bit63.albumarchiver.upload.NetworkReturns
@@ -51,6 +52,8 @@ open class AppContainer(
     val pageLoader by lazy { PageLoader(repository, server) }
     val shotFetcher by lazy { ShotFetcher(repository, shotStore, server) }
     val thumbFetcher = ThumbFetcher(thumbDir, server)
+    /** Page feedback from the server's album status (overlap coverage spec). */
+    val feedbackPoller by lazy { FeedbackPoller(repository, server, clock) }
     val lastPageLoader by lazy { LastPageLoader(repository, pageLoader, shotFetcher) }
     val importer by lazy { AlbumImporter(repository, server, shotStore::isLowOnSpace) { loadLastPage(it) } }
 

@@ -5,6 +5,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
@@ -67,6 +68,27 @@ data class ServerAlbum(
 @Serializable
 data class MoveRequest(val shots: List<String>)
 
+/**
+ * One page of the album status. The warnings are kept as sent: the app reads
+ * the fields it knows from them (`data/Feedback.kt`) and ignores the rest.
+ */
+@Serializable
+data class PageStatus(
+    val id: String,
+    val number: Int = 0,
+    val state: String = "",
+    @SerialName("last_run") val lastRun: String? = null,
+    val warnings: List<JsonElement> = emptyList(),
+    val error: String? = null,
+)
+
+@Serializable
+data class AlbumStatus(
+    @SerialName("waiting_for_page_size") val waitingForPageSize: Boolean = false,
+    val pdf: String = "none",
+    val pages: List<PageStatus> = emptyList(),
+)
+
 @Serializable
 data class ServerShot(val id: String, val sha256: String, val bytes: Long, val taken: String)
 
@@ -101,6 +123,12 @@ class ServerClient(
 
     suspend fun getAlbum(albumId: String): ApiResult<ServerAlbum> =
         call(request(url("albums", albumId).build()).get().build()) { json.decodeFromString<ServerAlbum>(it.body.string()) }
+
+    /** The album's processing status: every page's state and the warnings of its last run. */
+    suspend fun albumStatus(albumId: String): ApiResult<AlbumStatus> =
+        call(request(url("albums", albumId, "status").build()).get().build()) {
+            json.decodeFromString<AlbumStatus>(it.body.string())
+        }
 
     suspend fun getPage(albumId: String, pageId: String): ApiResult<ServerPage> =
         call(request(url("albums", albumId, "pages", pageId).build()).get().build()) {

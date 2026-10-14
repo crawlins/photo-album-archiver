@@ -33,6 +33,7 @@ import org.bit63.albumarchiver.data.ShotStore
 import org.bit63.albumarchiver.ui.ShotAction
 import org.bit63.albumarchiver.ui.ShotActionOutcome
 import org.bit63.albumarchiver.ui.ShotActions
+import org.bit63.albumarchiver.upload.FeedbackPoller
 import java.util.UUID
 import kotlin.coroutines.CoroutineContext
 
@@ -40,9 +41,13 @@ data class CaptureState(
     /** False until the last album has been looked up, so the empty state does not flash at launch. */
     val loaded: Boolean = false,
     val album: Album? = null,
-    /** The page the next shot goes to: always the album's last page; null before the first shot. */
+    /** The page the next shot goes to: the album's last page, or an earlier target page (overlap coverage Requirement 4.7); null before the first shot. */
     val page: Page? = null,
+    /** The album's last page, which [page] usually is. */
+    val lastPage: Page? = null,
     val shots: List<Shot> = emptyList(),
+    /** True when [page] is marked with a red dot (its latest feedback has a warning). */
+    val warned: Boolean = false,
     val pendingUploads: Int = 0,
     val serverConfigured: Boolean = true,
     val authRejected: Boolean = false,
@@ -50,7 +55,9 @@ data class CaptureState(
     val pageNumber: Int get() = page?.position ?: 1
     val shotCount: Int get() = page?.shotCount ?: 0
     val pageFull: Boolean get() = shotCount >= Limits.MAX_SHOTS_PER_PAGE
-    val albumFull: Boolean get() = (page?.position ?: 0) >= Limits.MAX_PAGES_PER_ALBUM
+    val albumFull: Boolean get() = (lastPage?.position ?: 0) >= Limits.MAX_PAGES_PER_ALBUM
+    /** False while shots go to an earlier page; "Next page" then reads "Back to page M". */
+    val targetIsLast: Boolean get() = page == null || lastPage == null || page.id == lastPage.id
 }
 
 sealed interface CaptureEvent {
@@ -71,6 +78,8 @@ class CaptureViewModel(
     private val store: ShotStore,
     val camera: ShotCamera,
     private val io: CoroutineContext = Dispatchers.IO,
+    feedback: FeedbackPoller? = null,
+    uploadRunning: Flow<Boolean> = flowOf(false),
 ) : ViewModel() {
 
     private val album: Flow<Album?> = settings.lastAlbumId.flatMapLatest { id ->
@@ -78,8 +87,17 @@ class CaptureViewModel(
     }
 
     private val page: Flow<Page?> = album.flatMapLatest { a ->
+        if (a == null) flowOf(null) else repo.observeTargetPage(a.id)
+    }
+
+    private val lastPage: Flow<Page?> = album.flatMapLatest { a ->
         if (a == null) flowOf(null) else repo.observeLastPage(a.id)
     }
+
+    /** The album's pages marked with a red dot (overlap coverage Requirement 4.3). */
+    val warnedPages: StateFlow<Set<String>> = album.flatMapLatest { a ->
+        if (a == null) flowOf(emptySet()) else repo.observeWarnedPages(a.id)
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
 
     private val shots: Flow<List<Shot>> = page.flatMapLatest { p ->
         if (p == null) flowOf(emptyList()) else repo.observeShots(p.id)
@@ -90,14 +108,17 @@ class CaptureViewModel(
     }
 
     val state: StateFlow<CaptureState> = combine(
-        album, page, shots, pending,
+        combine(album, page, lastPage, warnedPages) { a, p, last, warned -> Quad(a, p, last, p != null && p.id in warned) },
+        shots, pending,
         combine(settings.server, settings.authRejected) { s, rejected -> (s != null) to rejected },
-    ) { a, p, s, n, (configured, rejected) ->
+    ) { (a, p, last, warned), s, n, (configured, rejected) ->
         CaptureState(
-            loaded = true, album = a, page = p, shots = s, pendingUploads = n,
+            loaded = true, album = a, page = p, lastPage = last, shots = s, warned = warned, pendingUploads = n,
             serverConfigured = configured, authRejected = rejected,
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, CaptureState())
+
+    private data class Quad(val album: Album?, val page: Page?, val last: Page?, val warned: Boolean)
 
     private val _flashOn = MutableStateFlow(false)
     /** Off by default and not remembered across restarts (Requirement 4.4). */
@@ -120,6 +141,8 @@ class CaptureViewModel(
 
     init {
         refreshStorage()
+        // Page feedback from the server while this screen lives (Requirement 4.1).
+        feedback?.start(viewModelScope, album.map { it?.id }, uploadRunning)
         // The strip now shows another page, so a selection on it no longer applies.
         viewModelScope.launch {
             state.map { it.page?.id }.distinctUntilChanged().drop(1).collect { shotActions.clear() }
@@ -176,8 +199,9 @@ class CaptureViewModel(
             message("Couldn't take the shot: ${captured.exceptionOrNull()?.message ?: "camera error"}")
             return
         }
+        val target = current.page?.id?.takeIf { !current.targetIsLast }
         val result = try {
-            withContext(io) { repo.addShot(album.id, shotId, store.finish(temp)) }
+            withContext(io) { repo.addShot(album.id, shotId, store.finish(temp), target) }
         } catch (e: Exception) {
             withContext(io) { temp.delete() }
             message("Couldn't save the shot: ${e.message ?: "storage error"}")
@@ -196,9 +220,14 @@ class CaptureViewModel(
         }
     }
 
+    /** Starts the next page; from an earlier target page it only returns to the last page (Requirement 4.8). */
     fun nextPage() {
         shotActions.clear()
         val album = state.value.album ?: return
+        if (!state.value.targetIsLast) {
+            backToLastPage()
+            return
+        }
         viewModelScope.launch {
             when (val r = withContext(io) { repo.startNextPage(album.id) }) {
                 is NextPageResult.Started -> eventChannel.send(CaptureEvent.PageStarted(r.page.id, r.page.position))
@@ -207,6 +236,20 @@ class CaptureViewModel(
                 NextPageResult.NoAlbum -> Unit
             }
         }
+    }
+
+    /** Makes [pageId] the page new shots go to (Requirement 4.7). */
+    fun addShotsToPage(pageId: String) {
+        shotActions.clear()
+        val album = state.value.album ?: return
+        viewModelScope.launch { withContext(io) { repo.setTargetPage(album.id, pageId) } }
+    }
+
+    /** Back to the album's last page as the target, without creating a page (Requirement 4.8). */
+    fun backToLastPage() {
+        shotActions.clear()
+        val album = state.value.album ?: return
+        viewModelScope.launch { withContext(io) { repo.setTargetPage(album.id, null) } }
     }
 
     fun undoNextPage(pageId: String) {

@@ -6,13 +6,19 @@ import androidx.room.Index
 import androidx.room.PrimaryKey
 import java.time.Instant
 
-/** One physical photo album. [pageSize] is the backend's size string, e.g. `8.5x11in`. */
+/**
+ * One physical photo album. [pageSize] is the backend's size string, e.g.
+ * `8.5x11in`. [targetPageId] is the page new shots go to when it is not the
+ * album's last page: set from a page's feedback ("Add shots to page N",
+ * overlap coverage spec Requirement 4.7), null otherwise.
+ */
 @Entity(tableName = "album")
 data class Album(
     @PrimaryKey val id: String,
     val name: String,
     val pageSize: String,
     val createdAt: Instant,
+    val targetPageId: String? = null,
 )
 
 /**

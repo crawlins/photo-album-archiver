@@ -153,4 +153,16 @@ class ServerClientTest {
         assertThat(ServerClient.isCleartext(" HTTP://x")).isTrue()
         assertThat(ServerClient.isCleartext("https://x")).isFalse()
     }
+
+    @Test fun `album status keeps each page's warnings as sent`() = runBlocking<Unit> {
+        respond(200, """{"waiting_for_page_size":false,"pdf":"none","pages":[{"id":"p1","number":1,"state":"done","last_run":"t","warnings":[{"code":"glare","regions":[{"shot_boxes":{"s":[1,2,3,4]}}],"message":"m"}],"error":null}]}""")
+        val st = (client.albumStatus("a1") as ApiResult.Ok).value
+        assertThat(server.takeRequest().path).isEqualTo("/base/api/v1/albums/a1/status")
+        val page = st.pages.single()
+        assertThat(page.state).isEqualTo("done")
+        assertThat(page.lastRun).isEqualTo("t")
+        assertThat(org.bit63.albumarchiver.data.parseWarning(page.warnings.single())!!.regions.single().shotBoxes).containsKey("s")
+        respond(404)
+        assertThat(client.albumStatus("a1")).isEqualTo(ApiResult.HttpError(404))
+    }
 }

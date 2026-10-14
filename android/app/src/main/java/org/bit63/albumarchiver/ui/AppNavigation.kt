@@ -54,7 +54,7 @@ fun AppNavigation() {
         ) { entry ->
             PageOverviewScreen(
                 albumId = entry.arguments!!.getString("albumId")!!,
-                openReview = { albumId, pageId -> nav.navigate(Routes.review(albumId, pageId)) },
+                openReview = { albumId, pageId, index -> nav.navigate(Routes.review(albumId, pageId, index)) },
                 back = { nav.popBackStack() },
             )
         }
@@ -78,6 +78,7 @@ fun AppNavigation() {
                         popUpTo(Routes.CAPTURE)
                     }
                 },
+                toCapture = { nav.popBackStack(Routes.CAPTURE, inclusive = false) },
             )
         }
         composable(Routes.SERVER) {

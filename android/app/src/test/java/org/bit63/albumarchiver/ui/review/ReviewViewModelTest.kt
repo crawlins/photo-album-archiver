@@ -7,6 +7,9 @@ import org.bit63.albumarchiver.TestViewModels
 import org.bit63.albumarchiver.await
 import org.bit63.albumarchiver.blocking
 import org.bit63.albumarchiver.data.Album
+import org.bit63.albumarchiver.data.rectsFor
+import org.bit63.albumarchiver.data.linesFor
+import org.bit63.albumarchiver.data.PageFeedback
 import org.bit63.albumarchiver.data.NextPageResult
 import org.bit63.albumarchiver.data.PageSize
 import org.bit63.albumarchiver.data.ShotState
@@ -183,4 +186,47 @@ class ReviewViewModelTest {
         overview.cells.await { it.size == 1 && it[0].page.position == 1 && it[0].firstShot?.id == "p2s1" }
     }
 
+
+    // ---- Page feedback (overlap coverage spec, Requirements 4.5 to 4.7, 4.12) ----
+
+    private suspend fun uploaded() = env.db.ops().all().forEach { env.db.ops().delete(it.seq) }
+
+    private val singleCoverage = """[{"code":"single_coverage","fraction":0.31,"locations":["right"],
+        "regions":[{"bbox":[0.62,0,1,1],"location":"right","shots":[1],"shot_boxes":{"p2s2":[10,20,30,40]}}],
+        "message":"Only one photo covers the right edge (31.0% of the page)."}]"""
+
+    @Test fun `the page's warnings show once its shots are uploaded, and follow the page shown`() = blocking {
+        album(2, 3)
+        env.repo.saveFeedback(listOf(PageFeedback(pageIds[1], albumId, "done", null, singleCoverage, env.clock.instant())))
+        val vm = review(1, 1)
+        Thread.sleep(300)
+        assertThat(vm.warnings.value).isEmpty()  // shots still queued
+        uploaded()
+        val w = vm.warnings.await { it.isNotEmpty() }
+        assertThat(w.single().code).isEqualTo("single_coverage")
+        assertThat(w.rectsFor("p2s2", 100, 200).single().left).isWithin(1e-4f).of(0.1f)
+        assertThat(w.linesFor("p2s1").single().text).endsWith("look at the right.")
+        assertThat(w.linesFor("p2s2").single().text).isEqualTo("Only one photo covers the right edge (31.0% of the page).")
+        vm.showPage(pageIds[0])
+        vm.warnings.await { it.isEmpty() }
+    }
+
+    @Test fun `add shots to this page makes it the album's target page`() = blocking {
+        album(2, 3)
+        val vm = review(0)
+        vm.addShotsToPage(pageIds[0])
+        env.repo.observeTargetPage(albumId).await { it?.id == pageIds[0] }
+        assertThat(env.repo.album(albumId)!!.targetPageId).isEqualTo(pageIds[0])
+    }
+
+    @Test fun `the overview opens a warned page at its first shot that shows a warning`() = blocking {
+        album(2, 3)
+        env.repo.saveFeedback(listOf(PageFeedback(pageIds[1], albumId, "done", null, singleCoverage, env.clock.instant())))
+        uploaded()
+        val overview = vms.create { PageOverviewViewModel(env.repo, pageLoader, shotFetcher, albumId) }
+        overview.warnedPages.await { it.isNotEmpty() }
+        assertThat(overview.warnedPages.value).containsExactly(pageIds[1])
+        val index = overview.reviewIndexByPage.await { it[pageIds[1]] == 1 }  // p2s2
+        assertThat(index[pageIds[0]] ?: 0).isEqualTo(0)
+    }
 }
