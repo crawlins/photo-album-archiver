@@ -2,8 +2,8 @@
 
 Each task ends with passing tests. Backend paths are under `backend/`, app
 paths under `android/`. Requirement numbers refer to `requirements.md`.
-Tasks 1 to 3 are one backend PR; task 4 is a small server PR or part of it;
-task 5 is the app PR.
+Tasks 1 to 4 are one backend PR; task 5 is the app PR; task 6 (the composed
+page on the phone) is a backend commit and an app commit after those.
 
 - [ ] 1. Single-coverage regions and warning
   - [ ] 1.1 Add `QualityParams.min_single_area` (0.01) and
@@ -87,3 +87,19 @@ task 5 is the app PR.
     taps a marked thumbnail, sees the rectangle, and takes a shot into the
     earlier page.
     - _Requirements: 4.1 to 4.12_
+
+- [ ] 6. The composed page on the phone
+  - [ ] 6.1 `shots_outline` in the page metadata, for the flat and the bent
+    path; tests with a known homography.
+    - _Requirements: 6.1_
+  - [ ] 6.2 Worker writes the 1500 px `preview.jpg`; store and status carry
+    it; `GET .../pages/{pageId}/preview`; the worker rekeys
+    `shots_outline` by shot id; tests.
+    - _Requirements: 6.2_
+  - [ ] 6.3 `PageView` composable and `PageViewModel`: preview, outlines,
+    rectangles, selection, taps; "Page"/"Shot" toggle on the review screen;
+    page tile opens it; placeholder while no preview; refetch on a new run.
+    - _Requirements: 6.3 to 6.7_
+  - [ ] 6.4 Unit tests for the hit-testing and the view model, one emulator
+    test that opens the page view and taps an outline.
+    - _Requirements: 6.3 to 6.7_

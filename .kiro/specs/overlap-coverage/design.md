@@ -218,6 +218,32 @@ gains one assertion.
   target page's id; the upload queue is unchanged (it carries page ids
   already).
 
+### The composed page on the phone
+
+The phone never had the composed page; the print image is a 300 dpi file of
+several megabytes. The worker writes a 1500 px preview beside it, and the
+app shows that, with each shot's outline from the page metadata drawn over
+it. Outlines come from the same maps as shot boxes, the other way round: a
+shot's frame corners (or, for a bent page, points along its frame) through
+the shot's page homography or flattening map into page fractions. Overlap
+shows as crossing polygons, single coverage as a lone one, and the warning
+rectangles sit on the same picture, so the page view and the photo view say
+the same thing in two frames.
+
+- `pipeline.py`: `shots_outline` in `PageReport`, per used shot, a list of
+  `[x, y]` page fractions clipped to the page: four corners for the flat
+  path, every 8th frame pixel along each edge for the bent one, thinned to
+  at most 64 points.
+- `albumserver`: the worker copies the album step's processed page shrunk to
+  1500 px as `preview.jpg` in the run folder, `store` keeps its path, the
+  status carries `preview: true|false`, and
+  `GET .../pages/{pageId}/preview` serves it like the print image.
+- App: `PageView` composable (zoomable image, polygon layer, rectangle
+  layer, tap hit-testing in page fractions); reached from the overview tile
+  and the review screen's "Page"/"Shot" toggle; `PageViewModel` holds the
+  preview bitmap, the outlines (from the page feedback's `shots_outline`,
+  rekeyed by shot id) and the selection.
+
 ## Page metadata example (schema 3, the new part)
 
 ```json
@@ -276,6 +302,10 @@ gains one assertion.
 - **Server**: the idle default is 10 seconds in the parsed configuration;
   the status test asserts a `single_coverage` warning is returned with its
   `locations` and its region's `shot_boxes` keyed by shot id.
+- **Page view**: the outline of a shot warped by a known homography lands
+  on the right page fractions; the worker writes `preview.jpg` at 1500 px
+  and the endpoint serves it, 404 before a run; the app's hit-test picks the
+  polygon under a tap and the rectangle's first covering shot.
 - **App** (unit tests with the fake server): the poller fetches on open,
   after an upload and on the timer, and stops on close; the warned set
   excludes pages with queued uploads; the review model gives the right

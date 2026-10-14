@@ -47,6 +47,11 @@ Terms are as in the glare detector and Android app specs. In addition:
   mapping the region's page-frame box through that shot's homography.
 - **Target page**: the page new shots are added to. Today this is always the
   album's last page.
+- **Shot outline**: where one shot lies on the composed page, as a polygon
+  in page fractions (its four corners for a flat page; points along its
+  edges for a bent one).
+- **Page preview**: a reduced copy of the composed page (long side 1500 px)
+  the server keeps beside the print image.
 
 ## Requirements
 
@@ -199,6 +204,40 @@ so that I never find out after the album has gone back on the shelf.
     is enough.
 12. THE app SHALL show feedback only for pages whose every shot has been
     uploaded, since the server's run did not see the others.
+
+### Requirement 6: The composed page on the phone
+
+**User story:** As someone checking a page, I want to see the composed page
+with each shot's outline on it, so that I can see at a glance what is
+covered twice, what once, and which shot to retake.
+
+#### Acceptance criteria
+
+1. THE page metadata SHALL give each used shot's outline on the composed
+   page, in page fractions, under `shots_outline`, keyed by input index (the
+   server rekeys by shot id as it does shot boxes).
+2. WHEN a page run ends well, THE server SHALL keep a page preview beside the
+   print image and SHALL serve it at
+   `GET /api/v1/albums/{albumId}/pages/{pageId}/preview`, with 404 when none
+   has been made; the status SHALL say whether a preview exists.
+3. THE app SHALL offer a page view from the page overview's tile and from a
+   "Page" toggle on the review screen; the review screen's "Shot" toggle
+   returns to the photo. The warnings bar, the rectangles' colours and "Add
+   shots to page N" SHALL be the same in both.
+4. THE page view SHALL show the page preview, pinch to zoom, with every used
+   shot's outline drawn as a thin polygon numbered as in the thumbnail
+   strip, and the page's warning regions drawn as rectangles from their page
+   fractions.
+5. WHEN the user taps a shot's outline, THE app SHALL select that shot (its
+   polygon filled lightly, its thumbnail highlighted); WHEN the user taps a
+   selected outline, or a warning rectangle, THE app SHALL open the review
+   screen at that shot, or at the first shot covering the rectangle's
+   region.
+6. WHILE the page has no preview yet (not processed, processing or failed),
+   THE page view SHALL say so and show the first shot in its place with no
+   outlines.
+7. THE app SHALL fetch the preview when the page view opens and again when
+   the page's last run time changes, and SHALL keep the last one fetched.
 
 ### Requirement 5: Compatibility
 
