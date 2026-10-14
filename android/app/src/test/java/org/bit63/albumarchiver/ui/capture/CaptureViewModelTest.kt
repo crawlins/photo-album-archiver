@@ -13,6 +13,7 @@ import org.bit63.albumarchiver.data.AddShotResult
 import org.bit63.albumarchiver.data.Limits
 import org.bit63.albumarchiver.data.OpKind
 import org.bit63.albumarchiver.data.Page
+import org.bit63.albumarchiver.data.PageFeedback
 import org.bit63.albumarchiver.data.PageSize
 import org.bit63.albumarchiver.testing.FakeCamera
 import org.junit.After
@@ -235,5 +236,82 @@ class CaptureViewModelTest {
         val s = vm.state.await { it.album?.id == other.id }
         assertThat(s.album!!.name).isEqualTo("Other")
         assertThat(env.settings.lastAlbumId.first()).isEqualTo(other.id)
+    }
+
+    // ---- Target page (overlap coverage spec, Requirements 4.7 to 4.9) ----
+
+    private suspend fun twoPages(): Pair<String, String> {
+        val albumId = openAlbum()
+        env.repo.addShot(albumId, "s1", env.written("s1"))
+        val p1 = env.repo.lastPage(albumId)!!.id
+        env.repo.startNextPage(albumId)
+        env.repo.addShot(albumId, "s2", env.written("s2"))
+        vm.state.await { it.pageNumber == 2 && it.shots.size == 1 }
+        return albumId to p1
+    }
+
+    @Test fun `add shots to an earlier page makes it the target and the shutter shoots into it`() = blocking {
+        val (albumId, p1) = twoPages()
+        vm.addShotsToPage(p1)
+        val s = vm.state.await { it.page?.id == p1 && it.shots.map { shot -> shot.id } == listOf("s1") }
+        assertThat(s.targetIsLast).isFalse()
+        assertThat(s.pageNumber).isEqualTo(1)
+        assertThat(s.lastPage?.position).isEqualTo(2)
+        assertThat(s.shots.map { it.id }).containsExactly("s1")
+        vm.takeShot()
+        val after = vm.state.await { it.shots.size == 2 }
+        assertThat(after.page?.id).isEqualTo(p1)
+        assertThat(env.repo.shots(p1)).hasSize(2)
+        assertThat(env.repo.lastPage(albumId)!!.shotCount).isEqualTo(1)
+        val op = env.db.ops().all().last { it.kind == OpKind.PUT_SHOT }
+        assertThat(op.pageId).isEqualTo(p1)
+    }
+
+    @Test fun `next page from an earlier target page only returns to the last page`() = blocking {
+        val (albumId, p1) = twoPages()
+        vm.addShotsToPage(p1)
+        vm.state.await { it.page?.id == p1 }
+        vm.nextPage()
+        val s = vm.state.await { it.targetIsLast }
+        assertThat(s.pageNumber).isEqualTo(2)
+        assertThat(env.repo.pages(albumId)).hasSize(2)
+        assertThat(env.repo.album(albumId)!!.targetPageId).isNull()
+    }
+
+    @Test fun `back to the last page clears the target, and deleting the target page does too`() = blocking {
+        val (albumId, p1) = twoPages()
+        vm.addShotsToPage(p1)
+        vm.state.await { it.page?.id == p1 }
+        vm.backToLastPage()
+        vm.state.await { it.targetIsLast }
+        vm.addShotsToPage(p1)
+        vm.state.await { it.page?.id == p1 }
+        env.repo.deletePage(p1)
+        val s = vm.state.await { it.targetIsLast && it.pageNumber == 1 }
+        assertThat(s.page?.id).isNotEqualTo(p1)
+        assertThat(env.repo.album(albumId)!!.targetPageId).isNull()
+    }
+
+    @Test fun `a page of another album cannot become the target`() = blocking {
+        val (albumId, _) = twoPages()
+        val other = env.repo.createAlbum("Other", PageSize.DEFAULT)
+        env.repo.addShot(other.id, "o1", env.written("o1"))
+        vm.addShotsToPage(env.repo.lastPage(other.id)!!.id)
+        Thread.sleep(300)
+        assertThat(vm.state.value.targetIsLast).isTrue()
+        assertThat(env.repo.album(albumId)!!.targetPageId).isNull()
+    }
+
+    @Test fun `the current page is warned when its feedback has an area warning and nothing is queued`() = blocking {
+        val (albumId, _) = twoPages()
+        val p2 = env.repo.lastPage(albumId)!!.id
+        env.repo.saveFeedback(listOf(PageFeedback(p2, albumId, "done", null, """[{"code":"glare","message":"m","regions":[]}]""", env.clock.instant())))
+        Thread.sleep(300)
+        assertThat(vm.state.value.warned).isFalse()  // s2 is still queued for upload
+        env.db.ops().all().forEach { env.db.ops().delete(it.seq) }
+        assertThat(vm.state.await { it.warned }.warned).isTrue()
+        assertThat(vm.warnedPages.value).containsExactly(p2)
+        env.repo.saveFeedback(listOf(PageFeedback(p2, albumId, "done", null, "[]", env.clock.instant())))
+        vm.state.await { !it.warned }
     }
 }

@@ -16,6 +16,7 @@ import org.bit63.albumarchiver.upload.ServerPageRef
 import org.bit63.albumarchiver.upload.ServerShot
 import java.security.MessageDigest
 import java.time.Instant
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
@@ -56,6 +57,16 @@ class FakeAlbumServer : Dispatcher() {
 
     /** How many upcoming full-shot downloads get a flipped byte. */
     @Volatile var corruptNextDownloads = 0
+
+    /**
+     * Per album, the page entries of the status response as JSON text (the
+     * list under `pages`), set by tests that want warnings. Albums without
+     * an entry report every page as `done` with no warnings.
+     */
+    val statusPages = ConcurrentHashMap<String, String>()
+
+    /** How many status requests have been answered. */
+    @Volatile var statusRequests = 0
 
     fun start() = apply { server.start() }
     override fun shutdown() {
@@ -102,6 +113,7 @@ class FakeAlbumServer : Dispatcher() {
             seg == listOf("ping") && request.method == "GET" -> status(200)
             seg == listOf("albums") && request.method == "GET" -> json(ServerAlbumList(albums.values.sortedByDescending { it.updated }.map { it.summary() }))
             seg.size == 2 && seg[0] == "albums" -> albumRequest(request, seg[1])
+            seg.size == 3 && seg[0] == "albums" && seg[2] == "status" && request.method == "GET" -> statusRequest(seg[1])
             seg.size == 4 && seg[0] == "albums" && seg[2] == "pages" -> pageRequest(request, seg[1], seg[3])
             seg.size == 5 && seg[0] == "albums" && seg[2] == "pages" && seg[4] == "move" && request.method == "POST" ->
                 moveRequest(request, seg[1], seg[3])
@@ -109,6 +121,16 @@ class FakeAlbumServer : Dispatcher() {
                 shotRequest(request, seg[1], seg[3], seg[5])
             else -> status(404)
         }
+    }
+
+    private fun statusRequest(albumId: String): MockResponse {
+        val a = albums[albumId] ?: return status(404)
+        statusRequests++
+        val pages = statusPages[albumId] ?: a.pages.mapIndexed { i, p ->
+            """{"id":"${p.id}","number":${i + 1},"state":"done","last_run":null,"warnings":[]}"""
+        }.joinToString(",", "[", "]")
+        return MockResponse().setResponseCode(200).setHeader("Content-Type", "application/json")
+            .setBody("""{"waiting_for_page_size":false,"pdf":"none","pages":$pages}""")
     }
 
     private fun albumRequest(request: RecordedRequest, albumId: String): MockResponse = when (request.method) {

@@ -58,6 +58,13 @@ import org.bit63.albumarchiver.ui.LocalContainer
 import org.bit63.albumarchiver.ui.ShotActionsSheet
 import org.bit63.albumarchiver.ui.ShotFile
 import org.bit63.albumarchiver.ui.ShotStrip
+import org.bit63.albumarchiver.ui.WarningRects
+import org.bit63.albumarchiver.ui.WarningsBar
+import org.bit63.albumarchiver.ui.displayedSize
+import org.bit63.albumarchiver.data.PageWarning
+import org.bit63.albumarchiver.data.linesFor
+import org.bit63.albumarchiver.data.marksPage
+import org.bit63.albumarchiver.data.rectsFor
 import java.io.File
 
 private sealed interface ReviewDialog {
@@ -71,11 +78,15 @@ private sealed interface ReviewDialog {
  * zoom, and "Delete shot" / "Delete page".
  */
 @Composable
-fun ReviewScreen(albumId: String, pageId: String, index: Int, back: () -> Unit, toOverview: () -> Unit) {
+fun ReviewScreen(albumId: String, pageId: String, index: Int, back: () -> Unit, toOverview: () -> Unit, toCapture: () -> Unit = back) {
     val container = LocalContainer.current
     val vm: ReviewViewModel = viewModel(key = "review-$albumId-$pageId-$index") {
-        ReviewViewModel(container.repository, container.pageLoader, container.shotFetcher, albumId, pageId, index)
+        ReviewViewModel(
+            container.repository, container.pageLoader, container.shotFetcher, albumId, pageId, index,
+            feedback = container.feedbackPoller, uploadRunning = container.uploadRunning,
+        )
     }
+    val warnings by vm.warnings.collectAsStateWithLifecycle()
     val position by vm.position.collectAsStateWithLifecycle()
     val page by vm.page.collectAsStateWithLifecycle()
     val shots by vm.shots.collectAsStateWithLifecycle()
@@ -122,7 +133,7 @@ fun ReviewScreen(albumId: String, pageId: String, index: Int, back: () -> Unit, 
                 val shot = shots.getOrNull(i) ?: return@HorizontalPager
                 LaunchedEffect(shot.id, shot.state, networkReturns) { vm.loader.ensureShot(shot) }
                 when {
-                    shot.state == ShotState.PRESENT -> ZoomableShot(File(shot.path))
+                    shot.state == ShotState.PRESENT -> ZoomableShot(File(shot.path), warnings, shot.id)
                     shotLoads[shot.id] == LoadState.FAILED -> FullPlaceholder("Couldn't load this shot")
                     else -> FullPlaceholder("Loading…")
                 }
@@ -183,6 +194,14 @@ fun ReviewScreen(albumId: String, pageId: String, index: Int, back: () -> Unit, 
         val next = remember(pages, pos) { vm.nextPageId() }
         Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().navigationBarsPadding()) {
             SnackbarHost(snackbar)
+            // The page's warnings and the way to add shots to it (overlap coverage Requirements 4.5 to 4.7).
+            if (current != null && warnings.isNotEmpty()) {
+                WarningsBar(
+                    lines = warnings.linesFor(shots.getOrNull(pos.index)?.id),
+                    pageNumber = current.position,
+                    onAddShots = { vm.addShotsToPage(current.id); toCapture() },
+                )
+            }
             if (current?.shotsLoaded == true && shots.isNotEmpty()) {
                 ShotStrip(
                     shots = shots,
@@ -192,6 +211,7 @@ fun ReviewScreen(albumId: String, pageId: String, index: Int, back: () -> Unit, 
                     onLongPress = { vm.shotActions.onLongPress(it.id) },
                     thumbTag = "reviewThumb",
                     modifier = Modifier.fillMaxWidth().background(Color(0x88000000)).padding(8.dp).testTag("reviewStrip"),
+                    warned = warnings.marksPage(),
                 )
             }
             Row(Modifier.fillMaxWidth().padding(16.dp)) {
@@ -249,9 +269,14 @@ fun ReviewScreen(albumId: String, pageId: String, index: Int, back: () -> Unit, 
  * pager and swipe between shots.
  */
 @Composable
-private fun ZoomableShot(file: File) {
+private fun ZoomableShot(file: File, warnings: List<PageWarning> = emptyList(), shotId: String? = null) {
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
+    // The photo's displayed size, for placing the warning rectangles on it.
+    val size = remember(file) { displayedSize(file) }
+    val rects = remember(warnings, shotId, size) {
+        if (shotId == null || size == null) emptyList() else warnings.rectsFor(shotId, size.first, size.second)
+    }
     Box(
         Modifier
             .fillMaxSize()
@@ -279,5 +304,6 @@ private fun ZoomableShot(file: File) {
             .testTag("shotImage"),
     ) {
         ShotFile(file, Modifier.fillMaxSize())
+        if (size != null) WarningRects(rects, size.first.toFloat() / size.second)
     }
 }

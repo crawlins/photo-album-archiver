@@ -20,6 +20,11 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.bit63.albumarchiver.data.AlbumRepository
+import kotlinx.coroutines.flow.distinctUntilChanged
+import org.bit63.albumarchiver.upload.FeedbackPoller
+import org.bit63.albumarchiver.data.firstShotWithBox
+import org.bit63.albumarchiver.data.PageWarning
+import org.bit63.albumarchiver.data.PageFeedback
 import org.bit63.albumarchiver.data.Page
 import org.bit63.albumarchiver.data.Shot
 import org.bit63.albumarchiver.data.ShotState
@@ -91,8 +96,32 @@ class PageOverviewViewModel(
     shotFetcher: ShotFetcher,
     val albumId: String,
     private val io: CoroutineContext = Dispatchers.IO,
+    feedback: FeedbackPoller? = null,
+    uploadRunning: Flow<Boolean> = flowOf(false),
 ) : ViewModel() {
     val loader = OnDemandLoader(pageLoader, shotFetcher, viewModelScope)
+
+    init {
+        feedback?.start(viewModelScope, flowOf(albumId), uploadRunning)
+    }
+
+    /** Pages marked with a red dot (overlap coverage Requirement 4.3). */
+    val warnedPages: StateFlow<Set<String>> = repo.observeWarnedPages(albumId)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
+
+    /** Each page's latest feedback, for the overview's state word and the tap target. */
+    val feedbackByPage: StateFlow<Map<String, PageFeedback>> = repo.observeFeedback(albumId)
+        .map { rows -> rows.associateBy { it.pageId } }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
+
+    /** Where a tap on a page's tile opens the review: the first shot that shows one of its warnings, else the first shot (Requirement 4.4). */
+    val reviewIndexByPage: StateFlow<Map<String, Int>> = combine(feedbackByPage, repo.observeAlbumShots(albumId)) { fb, shots ->
+        val byPage = shots.groupBy { it.pageId }
+        fb.mapValues { (pageId, feedback) ->
+            val ids = byPage[pageId].orEmpty().map { it.id }
+            feedback.warnings.firstShotWithBox(ids)?.let { ids.indexOf(it) } ?: 0
+        }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
 
     val albumName: StateFlow<String> = repo.observeAlbum(albumId).map { it?.name ?: "" }
         .stateIn(viewModelScope, SharingStarted.Eagerly, "")
@@ -122,12 +151,30 @@ class ReviewViewModel(
     startPageId: String,
     startIndex: Int,
     private val io: CoroutineContext = Dispatchers.IO,
+    feedback: FeedbackPoller? = null,
+    uploadRunning: Flow<Boolean> = flowOf(false),
 ) : ViewModel() {
     val loader = OnDemandLoader(pageLoader, shotFetcher, viewModelScope)
 
     /** The page and shot to show; changes with the arrows and after deletions. */
     private val _position = MutableStateFlow<Slot?>(Slot(startPageId, startIndex))
     val position: StateFlow<Slot?> = _position
+
+    init {
+        feedback?.start(viewModelScope, flowOf(albumId), uploadRunning)
+    }
+
+    /** The current page's warnings, when its shots have all been uploaded; empty otherwise (overlap coverage Requirements 4.5, 4.12). */
+    val warnings: StateFlow<List<PageWarning>> = combine(
+        _position.map { it?.pageId }.distinctUntilChanged().flatMapLatest { id -> if (id == null) flowOf(null) else repo.observePageFeedback(id) },
+        repo.observePendingPages(albumId),
+    ) { fb, pending -> if (fb == null || fb.pageId in pending) emptyList() else fb.warnings }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /** Makes the page shown the page new shots go to (Requirement 4.7). */
+    fun addShotsToPage(pageId: String) {
+        viewModelScope.launch { withContext(io) { repo.setTargetPage(albumId, pageId) } }
+    }
 
     val pages: StateFlow<List<Page>> = repo.observePages(albumId)
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())

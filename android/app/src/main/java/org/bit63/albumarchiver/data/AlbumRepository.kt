@@ -2,6 +2,7 @@ package org.bit63.albumarchiver.data
 
 import androidx.room.withTransaction
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import java.io.File
 import java.time.Clock
@@ -62,6 +63,7 @@ class AlbumRepository(
     private val pages = db.pages()
     private val shots = db.shots()
     private val ops = db.ops()
+    private val feedback = db.feedback()
 
     // ---- Reads ----
 
@@ -73,6 +75,37 @@ class AlbumRepository(
     fun observeShots(pageId: String): Flow<List<Shot>> = shots.observeForPage(pageId)
     fun observeAlbumShots(albumId: String): Flow<List<Shot>> = shots.observeForAlbum(albumId)
     fun observePendingShots(albumId: String): Flow<Int> = ops.observePendingShots(albumId)
+    fun observePendingPages(albumId: String): Flow<List<String>> = ops.observePendingPages(albumId)
+    fun observeFeedback(albumId: String): Flow<List<PageFeedback>> = feedback.observeForAlbum(albumId)
+    fun observePageFeedback(pageId: String): Flow<PageFeedback?> = feedback.observe(pageId)
+
+    /**
+     * The pages marked with a red dot: those whose latest feedback has an
+     * area warning and whose shots have all reached the server (overlap
+     * coverage spec, Requirements 4.3 and 4.12).
+     */
+    fun observeWarnedPages(albumId: String): Flow<Set<String>> =
+        combine(observeFeedback(albumId), observePendingPages(albumId)) { fb, pending ->
+            fb.filter { it.pageId !in pending && it.warnings.marksPage() }.map { it.pageId }.toSet()
+        }
+
+    /** The page new shots go to: the album's target page when set and still there, else its last page (Requirement 4.7). */
+    fun observeTargetPage(albumId: String): Flow<Page?> =
+        combine(observeAlbum(albumId), observePages(albumId)) { album, ps ->
+            ps.firstOrNull { it.id == album?.targetPageId } ?: ps.lastOrNull()
+        }
+
+    suspend fun saveFeedback(rows: List<PageFeedback>) {
+        if (rows.isNotEmpty()) feedback.upsert(rows)
+    }
+
+    /** Makes [pageId] the target page, or the last page again with null; false when the page is not the album's. */
+    suspend fun setTargetPage(albumId: String, pageId: String?): Boolean = db.withTransaction {
+        if (pageId != null && pages.get(pageId)?.albumId != albumId) return@withTransaction false
+        val last = pages.last(albumId)
+        albums.setTargetPage(albumId, if (pageId == last?.id) null else pageId)
+        true
+    }
     fun observeQueueHeadAlbum(): Flow<String?> = ops.observeHead().map { it?.albumId }
 
     suspend fun album(id: String): Album? = albums.get(id)
@@ -133,10 +166,11 @@ class AlbumRepository(
      * (Requirement 10.3). On [AddShotResult.PageFull] or [AddShotResult.NoAlbum]
      * the temp file is left for the caller to delete.
      */
-    suspend fun addShot(albumId: String, shotId: String, written: ShotStore.Written): AddShotResult {
+    suspend fun addShot(albumId: String, shotId: String, written: ShotStore.Written, pageId: String? = null): AddShotResult {
         val result = db.withTransaction {
             albums.get(albumId) ?: return@withTransaction AddShotResult.NoAlbum
-            var page = pages.last(albumId)
+            var page = if (pageId != null) pages.get(pageId)?.takeIf { it.albumId == albumId } else pages.last(albumId)
+            if (pageId != null && page == null) return@withTransaction AddShotResult.NoAlbum
             var created = false
             if (page == null) {
                 page = Page(newId(), albumId, position = 1)
@@ -374,6 +408,8 @@ class AlbumRepository(
 
     private suspend fun removePageInTransaction(page: Page) {
         ops.deletePutShotsForPage(page.id)
+        feedback.delete(page.id)
+        if (albums.get(page.albumId)?.targetPageId == page.id) albums.setTargetPage(page.albumId, null)
         pages.delete(page.id) // shots cascade
         pages.shiftDownStep1(page.albumId, page.position)
         pages.shiftDownStep2(page.albumId)

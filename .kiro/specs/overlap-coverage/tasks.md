@@ -62,28 +62,28 @@ page on the phone) is a backend commit and an app commit after those.
     `locations`, `fraction` and shot boxes keyed by shot id.
     - _Requirements: 3.2_
 
-- [ ] 5. Page feedback in the app
-  - [ ] 5.1 `ServerClient.albumStatus` and the status models, regions and
+- [x] 5. Page feedback in the app
+  - [x] 5.1 `ServerClient.albumStatus` and the status models, regions and
     shot boxes included, unknown fields ignored; a fake-server test.
     - _Requirements: 4.1, 5.3_
-  - [ ] 5.2 `PageFeedback` entity and DAO; `FeedbackPoller` started and
+  - [x] 5.2 `PageFeedback` entity and DAO; `FeedbackPoller` started and
     stopped with the capture, overview and review screens, triggered by
     upload completion and a 10 second timer; failures silent; `warnedPages`
     excluding pages with queued uploads.
     - _Requirements: 4.1, 4.2, 4.11, 4.12_
-  - [ ] 5.3 Red dots: overview tiles, both thumbnail strips, the capture
+  - [x] 5.3 Red dots: overview tiles, both thumbnail strips, the capture
     screen's page number.
     - _Requirements: 4.3, 4.10_
-  - [ ] 5.4 Review screen: warning messages at the bottom, rectangles over
+  - [x] 5.4 Review screen: warning messages at the bottom, rectangles over
     the zoomable photo from the current photo's shot boxes, location words
     for regions without one; overview tap opens the first photo with a box.
     - _Requirements: 4.4, 4.5, 4.6, 4.10_
-  - [ ] 5.5 Target page: `Album.targetPageId`, "Add shots to page N" on the
+  - [x] 5.5 Target page: `Album.targetPageId`, "Add shots to page N" on the
     review screen, `setTargetPage`, `backToLastPage`, the capture screen
     reading the target page for its number, strip and shot saving, "Next
     page" relabelled and rerouted, restore on restart, fallback on deletion.
     - _Requirements: 4.7, 4.8, 4.9_
-  - [ ] 5.6 View model unit tests for 5.2 to 5.5 and one emulator test that
+  - [x] 5.6 View model unit tests for 5.2 to 5.5 and one emulator test that
     taps a marked thumbnail, sees the rectangle, and takes a shot into the
     earlier page.
     - _Requirements: 4.1 to 4.12_

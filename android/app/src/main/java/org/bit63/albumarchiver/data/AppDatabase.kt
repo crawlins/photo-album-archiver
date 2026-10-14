@@ -39,6 +39,7 @@ interface AlbumDao {
     @Query("SELECT * FROM album WHERE id = :id") fun observe(id: String): Flow<Album?>
     @Query("SELECT id FROM album") suspend fun ids(): List<String>
     @Query("SELECT id FROM album") fun observeIds(): Flow<List<String>>
+    @Query("UPDATE album SET targetPageId = :pageId WHERE id = :albumId") suspend fun setTargetPage(albumId: String, pageId: String?)
 
     @Query(
         """
@@ -127,12 +128,24 @@ interface UploadOpDao {
     @Query("SELECT COUNT(*) FROM upload_op") fun observeCount(): Flow<Int>
     @Query("SELECT COUNT(*) FROM upload_op WHERE kind = 'PUT_SHOT' AND albumId = :albumId")
     fun observePendingShots(albumId: String): Flow<Int>
+    /** Pages with a shot still to upload: the server's feedback on them is out of date (overlap coverage Requirement 4.12). */
+    @Query("SELECT DISTINCT pageId FROM upload_op WHERE kind = 'PUT_SHOT' AND albumId = :albumId AND pageId IS NOT NULL")
+    fun observePendingPages(albumId: String): Flow<List<String>>
+}
+
+@Dao
+interface PageFeedbackDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun upsert(rows: List<PageFeedback>)
+    @Query("SELECT * FROM page_feedback WHERE pageId = :pageId") suspend fun get(pageId: String): PageFeedback?
+    @Query("SELECT * FROM page_feedback WHERE albumId = :albumId") fun observeForAlbum(albumId: String): Flow<List<PageFeedback>>
+    @Query("SELECT * FROM page_feedback WHERE pageId = :pageId") fun observe(pageId: String): Flow<PageFeedback?>
+    @Query("DELETE FROM page_feedback WHERE pageId = :pageId") suspend fun delete(pageId: String)
 }
 
 @Database(
-    entities = [Album::class, Page::class, Shot::class, UploadOp::class],
-    version = 2,
-    autoMigrations = [AutoMigration(from = 1, to = 2)],
+    entities = [Album::class, Page::class, Shot::class, UploadOp::class, PageFeedback::class],
+    version = 3,
+    autoMigrations = [AutoMigration(from = 1, to = 2), AutoMigration(from = 2, to = 3)],
 )
 @TypeConverters(Converters::class)
 abstract class AppDatabase : RoomDatabase() {
@@ -140,6 +153,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun pages(): PageDao
     abstract fun shots(): ShotDao
     abstract fun ops(): UploadOpDao
+    abstract fun feedback(): PageFeedbackDao
 
     companion object {
         fun open(context: Context): AppDatabase =

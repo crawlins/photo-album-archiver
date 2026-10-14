@@ -66,6 +66,8 @@ fun ShotStrip(
     current: Int? = null,
     thumbTag: String = "thumb",
     thumbSize: Dp = 56.dp,
+    /** True when the strip's page is warned: every thumbnail gets the red dot (overlap coverage Requirement 4.3). */
+    warned: Boolean = false,
 ) {
     val listState = rememberLazyListState()
     val haptics = LocalHapticFeedback.current
@@ -107,6 +109,7 @@ fun ShotStrip(
                     .testTag(thumbTag),
             ) {
                 ShotThumbnail(shot, Modifier.matchParentSize().padding(if (index == selectedIndex) 4.dp else 1.dp))
+                if (warned && index != selectedIndex) WarningDot(size = 10.dp, inset = 3.dp, tag = "thumbWarningDot")
                 if (index == selectedIndex) {
                     Icon(
                         Icons.Default.CheckCircle,

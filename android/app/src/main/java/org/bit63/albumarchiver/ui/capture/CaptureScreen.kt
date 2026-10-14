@@ -97,6 +97,7 @@ import org.bit63.albumarchiver.ui.LocalContainer
 import org.bit63.albumarchiver.ui.LocalVolumeKeys
 import org.bit63.albumarchiver.ui.ShotActionsSheet
 import org.bit63.albumarchiver.ui.ShotStrip
+import org.bit63.albumarchiver.ui.WarningDot
 import org.bit63.albumarchiver.ui.VolumeKeyRouter
 import org.bit63.albumarchiver.ui.albums.AlbumDialog
 import org.bit63.albumarchiver.ui.albums.AlbumDrawer
@@ -126,7 +127,10 @@ fun CaptureScreen(
 ) {
     val container = LocalContainer.current
     val vm: CaptureViewModel = viewModel {
-        CaptureViewModel(container.repository, container.settings, container.shotStore, container.newCamera())
+        CaptureViewModel(
+            container.repository, container.settings, container.shotStore, container.newCamera(),
+            feedback = container.feedbackPoller, uploadRunning = container.uploadRunning,
+        )
     }
     val albumsVm: AlbumsViewModel = viewModel {
         AlbumsViewModel(container.repository, container.settings, container.uploadRunning)
@@ -294,10 +298,12 @@ fun CaptureScreen(
                         },
                         onLongPress = { vm.shotActions.onLongPress(it.id) },
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp).testTag("thumbnails"),
+                        warned = state.warned,
                     )
                     Controls(
                         shutterEnabled = !state.pageFull && !capturing,
-                        nextEnabled = !state.albumFull,
+                        nextEnabled = !state.albumFull || !state.targetIsLast,
+                        nextLabel = if (state.targetIsLast) "Next page" else "Back to page ${state.lastPage?.position ?: ""}",
                         onShutter = vm::takeShot,
                         onNextPage = vm::nextPage,
                     )
@@ -452,12 +458,16 @@ private fun Header(
             )
             if (album != null) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        "Page ${state.pageNumber}",
-                        color = Color.White,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.clickable(onClick = onPageNumber).testTag("pageNumber"),
-                    )
+                    Box {
+                        Text(
+                            "Page ${state.pageNumber}",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.clickable(onClick = onPageNumber).padding(end = 10.dp).testTag("pageNumber"),
+                        )
+                        // A red dot when the page's feedback has a warning (overlap coverage Requirement 4.3).
+                        if (state.warned) WarningDot(size = 8.dp, inset = 0.dp, tag = "pageWarningDot")
+                    }
                     val shots = if (state.shotCount == 1) "1 shot" else "${state.shotCount} shots"
                     Text("  ·  $shots", color = Color.White, modifier = Modifier.testTag("shotCount"))
                 }
@@ -548,6 +558,7 @@ private fun LimitHint(state: CaptureState) {
 private fun Controls(
     shutterEnabled: Boolean,
     nextEnabled: Boolean,
+    nextLabel: String,
     onShutter: () -> Unit,
     onNextPage: () -> Unit,
 ) {
@@ -573,7 +584,7 @@ private fun Controls(
                 onClick = onNextPage,
                 enabled = nextEnabled,
                 modifier = Modifier.width(110.dp).testTag("nextPage"),
-            ) { Text("Next page") }
+            ) { Text(nextLabel, maxLines = 1) }
         }
     }
 }
