@@ -1,7 +1,19 @@
 import numpy as np
 import pytest
 
-from albumproc.regions import QualityParams, attach_shot_boxes, find_regions, glare_regions, page_warnings, shot_box, shot_outline, single_coverage_regions, uncovered_regions
+from albumproc.regions import (
+    QualityParams,
+    attach_shot_boxes,
+    cause_regions,
+    find_regions,
+    glare_regions,
+    page_warnings,
+    shadow_regions,
+    shot_box,
+    shot_outline,
+    single_coverage_regions,
+    uncovered_regions,
+)
 
 GRID = (100, 200)  # h, w
 PAGE = (2000, 1000)  # composed page w, h
@@ -252,3 +264,60 @@ def test_shot_outline_follows_a_slanted_shot_with_few_points():
     # The point in the parallelogram's corner region, not a bounding box.
     assert any(abs(x - 60 / 199) < 0.02 and y < 0.05 for x, y in pts)
     assert any(abs(x - (160 - 50) / 199) < 0.03 and y > 0.95 for x, y in pts)
+
+
+def test_shadow_regions_name_their_own_causes():
+    left, right = _shots()
+    count = left.astype(int) + right
+    res = np.zeros(GRID, np.float32)
+    res[10:30, 20:60] = 0.8  # seen by the left shot only
+    res[60:80, 90:110] = 0.6  # in the overlap: both shots had it
+    regions = shadow_regions(res, count, [3, 5], [left, right], PAGE, QualityParams())
+    assert [r.cause for r in regions] == ["single_shot", "all_shots_shadowed"]
+    assert [r.shots for r in regions] == [[3], [3, 5]]
+    glare = glare_regions(res, count, [3, 5], [left, right], PAGE, QualityParams())
+    assert [r.cause for r in glare] == ["single_shot", "all_shots_glared"]
+    assert [r.to_dict() for r in cause_regions(res, count, [3, 5], [left, right], PAGE, QualityParams(), ("a", "b"))] == [
+        {**r.to_dict(), "cause": c} for r, c in zip(regions, ("a", "b"))
+    ]
+
+
+def _sh(*causes, fraction=0.031):
+    locs = ["bottom-right", "top", "left"]
+    return {"fraction": fraction, "per_shot": {}, "regions": [{"location": locs[k], "cause": c, "shots": [0]} for k, c in enumerate(causes)]}
+
+
+def test_shadow_warning_for_one_single_shot_region():
+    (w,) = page_warnings({"fraction": 0.0, "per_shot": {}, "regions": []}, NONE, [], None, _sh("single_shot"))
+    assert w == {
+        "code": "shadow",
+        "fraction": 0.031,
+        "single_shot": 1,
+        "all_shots_shadowed": 0,
+        "location": "bottom-right",
+        "regions": [{"location": "bottom-right", "cause": "single_shot", "shots": [0]}],
+        "message": "A shadow remains on 3.1% of the page (bottom-right). Only one photo covers it; add a shot of that area without the shadow.",
+    }
+
+
+def test_shadow_warning_advice_by_cause():
+    none = {"fraction": 0.0, "per_shot": {}, "regions": []}
+    (w,) = page_warnings(none, NONE, [], None, _sh("all_shots_shadowed"))
+    assert w["message"] == (
+        "A shadow remains on 3.1% of the page (bottom-right)."
+        " Every photo has it; hold the phone so that you and it are not between the light and the page."
+    )
+    (w,) = page_warnings(none, NONE, [], None, _sh("all_shots_shadowed", "all_shots_shadowed"))
+    assert w["message"].startswith("Shadows remain on 3.1% of the page in 2 areas (largest bottom-right). Every photo has them;")
+    (w,) = page_warnings(none, NONE, [], None, _sh("single_shot", "single_shot"))
+    assert w["message"].endswith("Only one photo covers each; add shots of those areas without the shadow.")
+    (w,) = page_warnings(none, NONE, [], None, _sh("all_shots_shadowed", "single_shot", "single_shot"))
+    assert w["single_shot"] == 2 and w["all_shots_shadowed"] == 1
+    assert "2 of them are in one photo only; add shots of those areas without the shadow." in w["message"]
+    assert w["message"].endswith("Every photo has the rest; hold the phone so that you and it are not between the light and the page.")
+
+
+def test_shadow_warning_comes_after_glare_and_only_with_regions():
+    w = page_warnings(_g("single_shot"), NONE, [], None, _sh("single_shot"))
+    assert [x["code"] for x in w] == ["glare", "shadow"]
+    assert page_warnings({"fraction": 0.0, "per_shot": {}, "regions": []}, NONE, [], None, {"fraction": 0.0, "per_shot": {}, "regions": []}) == []

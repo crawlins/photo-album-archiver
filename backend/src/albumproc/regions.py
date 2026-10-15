@@ -1,6 +1,6 @@
-"""Regions of residual glare, of uncovered page and of single coverage, and the page's warnings.
+"""Regions of residual glare and shadow, of uncovered page and of single coverage, and the page's warnings.
 
-All three kinds of region are found on the detector's low-resolution grid and
+All these kinds of region are found on the detector's low-resolution grid and
 reported in page fractions and in composed-page pixels, with a location word
 from a 3 x 3 grid, so that the capture app can say where to aim the next
 shot. Each region also carries its box in every shot's own pixels
@@ -25,9 +25,9 @@ class Region:
     bbox_px: tuple[int, int, int, int]  # the same in composed-page pixels
     area: float  # fraction of the page
     location: str  # 3 x 3 grid word from the region's centroid
-    shots: list[int] | None = None  # input indexes covering it (glare only)
-    cause: str | None = None  # single_shot | all_shots_glared (glare only)
-    severity: float | None = None  # mean residual glare (glare only)
+    shots: list[int] | None = None  # input indexes covering it (glare and shadow)
+    cause: str | None = None  # single_shot | all_shots_glared (glare), single_shot | all_shots_shadowed (shadow)
+    severity: float | None = None  # mean residual glare or shadow (glare and shadow)
     edges: list[str] | None = None  # page edges it touches (uncovered and single coverage)
     # The region's box in each used shot's full-resolution pixels, by input
     # index, for the shots its box falls into at all (see ``shot_boxes``).
@@ -81,6 +81,32 @@ def find_regions(mask: np.ndarray, page_size: tuple[int, int], min_area: float) 
     return [(r, m) for _, _, _, r, m in found]
 
 
+def cause_regions(
+    residual: np.ndarray,
+    coverage_count: np.ndarray,
+    used: list[int],
+    shot_masks: list[np.ndarray],
+    page_size: tuple[int, int],
+    q: QualityParams,
+    causes: tuple[str, str] = ("single_shot", "all_shots_glared"),
+) -> list[Region]:
+    """Regions of residual glare or shadow, with the shots covering each and why it stayed.
+
+    A region seen by one shot only over more than half of its area gets the
+    first cause (another shot fixes it); otherwise every covering shot had it
+    there, and it gets the second.
+    """
+    out = []
+    for region, m in find_regions(residual >= q.residual_threshold, page_size, q.min_region_area):
+        single = float((coverage_count[m] == 1).sum()) > 0.5 * float(m.sum())
+        region.shots = [i for i, sm in zip(used, shot_masks) if (sm & m).any()]
+        region.cause = causes[0] if single else causes[1]
+        region.severity = round(float(residual[m].mean()), 4)
+        region.edges = None
+        out.append(region)
+    return out
+
+
 def glare_regions(
     residual: np.ndarray,
     coverage_count: np.ndarray,
@@ -89,21 +115,20 @@ def glare_regions(
     page_size: tuple[int, int],
     q: QualityParams,
 ) -> list[Region]:
-    """Residual glare regions, with the shots covering each and why it stayed.
+    """Residual glare regions: ``single_shot`` or ``all_shots_glared`` (see ``cause_regions``)."""
+    return cause_regions(residual, coverage_count, used, shot_masks, page_size, q, ("single_shot", "all_shots_glared"))
 
-    A region seen by one shot only over more than half of its area is
-    ``single_shot`` (another shot from a different angle fixes it); otherwise
-    every covering shot had glare there (``all_shots_glared``).
-    """
-    out = []
-    for region, m in find_regions(residual >= q.residual_threshold, page_size, q.min_region_area):
-        single = float((coverage_count[m] == 1).sum()) > 0.5 * float(m.sum())
-        region.shots = [i for i, sm in zip(used, shot_masks) if (sm & m).any()]
-        region.cause = "single_shot" if single else "all_shots_glared"
-        region.severity = round(float(residual[m].mean()), 4)
-        region.edges = None
-        out.append(region)
-    return out
+
+def shadow_regions(
+    residual: np.ndarray,
+    coverage_count: np.ndarray,
+    used: list[int],
+    shot_masks: list[np.ndarray],
+    page_size: tuple[int, int],
+    q: QualityParams,
+) -> list[Region]:
+    """Residual shadow regions: ``single_shot`` or ``all_shots_shadowed`` (see ``cause_regions``)."""
+    return cause_regions(residual, coverage_count, used, shot_masks, page_size, q, ("single_shot", "all_shots_shadowed"))
 
 
 def uncovered_map(coverage: np.ndarray, grid_shape: tuple[int, int]) -> np.ndarray:
@@ -218,8 +243,42 @@ def _carried(r: dict) -> dict:
     return {k: r[k] for k in ("bbox", "bbox_px", "location", "shots", "cause", "edges", "shot_boxes") if k in r}
 
 
-def page_warnings(glare: dict, uncovered: dict, dropped: list[int], single: dict | None = None) -> list[dict]:
-    """Warnings for the page metadata, from its glare, uncovered and single-coverage summaries.
+def shadow_warning(shadow: dict) -> dict:
+    """The ``shadow`` warning, from the page's shadow summary (which has at least one region).
+
+    The advice is to add a shot without the shadow where only one photo
+    covers it, and to move so that nothing is between the light and the
+    page where every photo has it.
+    """
+    regions = shadow["regions"]
+    n = len(regions)
+    single_n = sum(r["cause"] == "single_shot" for r in regions)
+    largest = regions[0]
+    if n == 1:
+        msg = f"A shadow remains on {_pct(shadow['fraction'])} of the page ({largest['location']})."
+    else:
+        msg = f"Shadows remain on {_pct(shadow['fraction'])} of the page in {n} areas (largest {largest['location']})."
+    add = " add a shot of that area without the shadow." if n == 1 else " add shots of those areas without the shadow."
+    move = " hold the phone so that you and it are not between the light and the page."
+    if single_n == n:
+        msg += (" Only one photo covers it;" if n == 1 else " Only one photo covers each;") + add
+    elif single_n == 0:
+        msg += (" Every photo has it;" if n == 1 else " Every photo has them;") + move
+    else:
+        msg += f" {single_n} of them {'is' if single_n == 1 else 'are'} in one photo only; add shots of those areas without the shadow. Every photo has the rest;" + move
+    return {
+        "code": "shadow",
+        "fraction": shadow["fraction"],
+        "single_shot": single_n,
+        "all_shots_shadowed": n - single_n,
+        "location": largest["location"],
+        "regions": [_carried(r) for r in regions],
+        "message": msg,
+    }
+
+
+def page_warnings(glare: dict, uncovered: dict, dropped: list[int], single: dict | None = None, shadow: dict | None = None) -> list[dict]:
+    """Warnings for the page metadata, from its glare, shadow, uncovered and single-coverage summaries.
 
     Every warning about an area carries its ``regions``, so a reader of the
     warnings alone (the app, through the server's status) can draw them. The
@@ -257,6 +316,9 @@ def page_warnings(glare: dict, uncovered: dict, dropped: list[int], single: dict
                 "message": msg,
             }
         )
+    regions = shadow["regions"] if shadow else []
+    if regions:
+        out.append(shadow_warning(shadow))
     regions = uncovered["regions"]
     if regions:
         places = list(dict.fromkeys(_place(r) for r in regions))

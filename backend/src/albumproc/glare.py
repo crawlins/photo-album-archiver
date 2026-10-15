@@ -37,7 +37,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from .fuse import WEIGHT_MAX_SIDE
+from .grid import WEIGHT_MAX_SIDE
 
 
 NET_PATH = Path(__file__).parent / "models" / "glare_net.onnx"

@@ -32,12 +32,18 @@ def test_page_writes_metadata_next_to_the_image(page, capsys):
     assert not list(out.parent.glob("*.tmp"))
     assert sorted(p.name for p in (d / "debug").glob("glare_*.png")) == ["glare_00.png", "glare_01.png"]
     assert (d / "debug" / "quality_overlay.jpg").exists()
+    # Shadow handling is off unless asked for: an empty report and no maps.
+    assert not list((d / "debug").glob("shadow_*.png"))
+    assert meta["detector"]["shadow"]["enabled"] is False
+    assert meta["shadow"] == {"fraction": 0.0, "per_shot": {"0": 0.0, "1": 0.0}, "regions": []}
 
 
 def test_masks_are_page_sized(page):
     _, _, out, _ = page
     img = cv2.imread(str(out))
     glare = cv2.imread(str(out.with_suffix(".glare.png")), cv2.IMREAD_GRAYSCALE)
+    shadow = cv2.imread(str(out.with_suffix(".shadow.png")), cv2.IMREAD_GRAYSCALE)
+    assert shadow.shape == img.shape[:2]
     unc = cv2.imread(str(out.with_suffix(".uncovered.png")), cv2.IMREAD_GRAYSCALE)
     single = cv2.imread(str(out.with_suffix(".single.png")), cv2.IMREAD_GRAYSCALE)
     assert single.shape == unc.shape and set(np.unique(single)) <= {0, 255}
@@ -55,6 +61,24 @@ def test_report_path_and_stdout(page, tmp_path, capsys):
     assert printed["detector"]["quality"] == {"residual_threshold": 0.6, "min_region_area": 0.001, "min_single_area": 0.01}
     assert not (tmp_path / "p.json").exists()
     assert not (tmp_path / "p.glare.png").exists()  # masks only when asked
+
+
+def test_page_with_shadow_handling(page, tmp_path, capsys):
+    _, shots, _, _ = page
+    on = tmp_path / "on.png"
+    assert main(["page", *map(str, shots), "-o", str(on), "--shadow", "--masks", "--debug", str(tmp_path / "debug")]) == 0
+    meta = json.loads(capsys.readouterr().out)
+    assert meta["detector"]["shadow"]["enabled"] is True
+    assert set(meta["shadow"]) == {"fraction", "per_shot", "regions"} and set(meta["shadow"]["per_shot"]) == {"0", "1"}
+    assert sorted(p.name for p in (tmp_path / "debug").glob("shadow_*.png")) == ["shadow_00.png", "shadow_01.png", "shadow_residual.png"]
+    assert cv2.imread(str(on.with_suffix(".shadow.png")), cv2.IMREAD_GRAYSCALE).shape == cv2.imread(str(on)).shape[:2]
+
+
+def test_synth_writes_the_shadow_truth(tmp_path, capsys):
+    assert main(["synth", str(tmp_path), "--kind", "glare", "-n", "2", "--seed", "5", "--shadow", "one"]) == 0
+    assert (tmp_path / "shot_00.shadow.png").exists() and not (tmp_path / "shot_01.shadow.png").exists()
+    m = cv2.imread(str(tmp_path / "shot_00.shadow.png"), cv2.IMREAD_GRAYSCALE)
+    assert m.shape == cv2.imread(str(tmp_path / "shot_00.jpg")).shape[:2] and 0 < (m > 0).mean() < 0.5
 
 
 def test_glare_command(page, tmp_path, capsys):
