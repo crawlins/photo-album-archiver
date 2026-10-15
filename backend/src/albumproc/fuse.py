@@ -6,18 +6,26 @@ its (smoothed) brightness rises above the darkest shot covering that pixel,
 times a feather that fades out towards the shot's edges so seams between
 partial shots blend instead of showing a step.
 
+A shadow breaks the darker-wins rule: the shadowed shot is the darker one.
+So after tone matching, shots are compared for shadows (``shadow.py``), and
+where a shot is shadowed and another is not, its weight falls with its
+shadow map and the other shots' brightness excess is measured against the
+darkest *unshadowed* shot. Where no shadow is found the weights are exactly
+the darker-wins ones.
+
 Weights are computed at reduced resolution (they are smooth anyway) and then
 upsampled, which keeps memory and time modest for 12 MP inputs.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import cv2
 import numpy as np
 
-WEIGHT_MAX_SIDE = 1000
+from .grid import WEIGHT_MAX_SIDE  # also imported from here by older code
+from .shadow import ShadowParams, comparison_shadow, glare_scores
 
 
 @dataclass
@@ -29,6 +37,7 @@ class FuseParams:
     halo_px: int = 5  # widen each glare spot by this many (low-res) pixels
     glare_floor: float = 0.02  # excess below this is noise or shading, not glare
     smooth_frac: float = 0.008  # blur of the weight maps, fraction of the long side
+    shadow: ShadowParams = field(default_factory=ShadowParams)
 
 
 @dataclass
@@ -43,7 +52,10 @@ class FuseResult:
     toned_small: list[np.ndarray] | None = None  # tone-matched shots, uint8 BGR
     small: list[np.ndarray] | None = None  # shots as taken, uint8 BGR
     masks_small: list[np.ndarray] | None = None  # eroded coverage masks
-    excess_small: list[np.ndarray] | None = None  # brightness excess over the darkest shot, 0..1, before the halo
+    excess_small: list[np.ndarray] | None = None  # brightness excess over the darkest (unshadowed) shot, 0..1, before the halo
+    # Shadow maps per shot, float32 0..1 on the grid; None when shadow handling is off.
+    shadow_small: list[np.ndarray] | None = None  # with the glare veto: what the weights used
+    shadow_raw_small: list[np.ndarray] | None = None  # without it: what the report counts
 
 
 def _small(a: np.ndarray, f: float, interp=cv2.INTER_AREA) -> np.ndarray:
@@ -114,15 +126,16 @@ def _fit_curve(x: np.ndarray, y: np.ndarray, gain: float) -> np.ndarray:
     return np.clip(lut, 0, 255)
 
 
-def _estimate_tone(imgs: list[np.ndarray], masks: list[np.ndarray], ref: int) -> np.ndarray:
+def _estimate_tone(imgs: list[np.ndarray], masks: list[np.ndarray], ref: int, g: np.ndarray | None = None) -> np.ndarray:
     """Per-shot, per-channel tone curves (n, 3, 256) matching every shot to ``ref``.
 
-    A global gain first; then a curve fitted on pixels that agree with the
-    other shots under that gain, which leaves glare out and absorbs the
-    camera's non-linear tone mapping and highlight clipping.
+    A global gain first (``g``, estimated when not given); then a curve
+    fitted on pixels that agree with the other shots under that gain, which
+    leaves glare out and absorbs the camera's non-linear tone mapping and
+    highlight clipping.
     """
     n = len(imgs)
-    g = _estimate_gains(imgs, masks, ref)
+    g = _estimate_gains(imgs, masks, ref) if g is None else g
     luts = np.stack([np.stack([np.arange(256, dtype=np.float32) * g[i, ch] for ch in range(3)]) for i in range(n)])
     for i in range(n):
         if i == ref:
@@ -159,6 +172,17 @@ def _photometric_reference(imgs: list[np.ndarray], masks: list[np.ndarray]) -> i
     ok = np.flatnonzero(clipped <= clipped.min() + 0.02)
     bright = [float(imgs[i][masks[i]].mean()) for i in ok]
     return int(ok[np.argsort(bright)[len(ok) // 2]])
+
+
+def _toned(small: list[np.ndarray], masks: list[np.ndarray], luts: np.ndarray) -> tuple[list[np.ndarray], list[np.ndarray]]:
+    """Tone-matched shots (uint8) and their smoothed luminance, +inf where not covered."""
+    toned, lum = [], []
+    for img, m, lut in zip(small, masks, luts):
+        toned.append(np.clip(_apply_tone(img, lut), 0, 255).astype(np.uint8))
+        g = cv2.cvtColor(toned[-1], cv2.COLOR_BGR2GRAY)
+        g = cv2.GaussianBlur(g.astype(np.float32) / 255.0, (0, 0), 2.0)
+        lum.append(np.where(m, g, np.inf))
+    return toned, lum
 
 
 def _smooth_weights(weights: list[np.ndarray], masks: list[np.ndarray], sigma: float) -> list[np.ndarray]:
@@ -199,24 +223,69 @@ def fuse(
 
     if reference is None:
         reference = _photometric_reference(small, small_m)
-    luts = _estimate_tone(small, small_m, reference)
-
-    # Smoothed luminance of each tone-matched shot; +inf where not covered.
-    lum, toned_small = [], []
-    for i in range(n):
-        toned_small.append(np.clip(_apply_tone(small[i], luts[i]), 0, 255).astype(np.uint8))
-        g = cv2.cvtColor(toned_small[i], cv2.COLOR_BGR2GRAY)
-        g = cv2.GaussianBlur(g.astype(np.float32) / 255.0, (0, 0), 2.0)
-        lum.append(np.where(small_m[i], g, np.inf))
-    lum_min = np.min(lum, axis=0)
+    gains = _estimate_gains(small, small_m, reference)
+    luts = _estimate_tone(small, small_m, reference, gains)
+    toned_small, lum = _toned(small, small_m, luts)
 
     sh, sw = small_m[0].shape
     feather_px = max(2.0, p.feather_frac * max(sh, sw))
     sigma = p.smooth_frac * max(sh, sw)
     # The halo also covers the reach of the blur below, so that smoothing a
-    # weight map does not let a glare spot back in at its rim.
+    # weight map does not let a glare spot (or a shadow) back in at its rim.
     r = p.halo_px + int(np.ceil(2 * sigma))
     halo = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
+
+    shadow_small = shadow_raw_small = None
+    shadow_w = None
+    if p.shadow.enabled:
+        scores = []
+
+        def glare_now():  # computed once, on the first tone, and only when a shadow is in sight
+            if not scores:
+                scores.extend(glare_scores(toned_small, small_m, small))
+            return scores
+
+        found = comparison_shadow(toned_small, small_m, p.shadow, glare_now)
+        # The tone curves are fitted on pixels that roughly agree between
+        # shots, and a shallow shadow over a large bright area (paper) can
+        # pass for agreement: the curve then bends to hide it. Look with the
+        # gains alone too, which the shadow barely moves.
+        plain = [np.clip(im.astype(np.float32) * g, 0, 255).astype(np.uint8) for im, g in zip(small, gains)]
+        found_plain = comparison_shadow(plain, small_m, p.shadow, glare_now)
+        if found.any() or found_plain.any():
+            # Fit the tone again without the shadowed pixels, and look again
+            # with the new tone.
+            fit_m = [
+                m & ~(cv2.dilate(((a > 0) | (b > 0)).astype(np.uint8), halo) > 0)
+                for m, a, b in zip(small_m, found.shadow, found_plain.shadow)
+            ]
+            # Only the shadowed shots' curves are refitted: refitting every
+            # shot moves the page's colours as a whole on real pages.
+            refit = _estimate_tone(small, fit_m, reference)
+            hit = [bool((a > 0).any() or (b > 0).any()) for a, b in zip(found.shadow, found_plain.shadow)]
+            luts2 = np.stack([refit[i] if hit[i] else luts[i] for i in range(n)])
+            toned2, lum2 = _toned(small, small_m, luts2)
+            found2 = comparison_shadow(toned2, small_m, p.shadow, glare_now)
+            if found2.any():
+                luts, toned_small, lum, found = luts2, toned2, lum2, found2
+            else:  # nothing after all: the tone stays as it was, so the page does too
+                found = found2
+        shadow_small, shadow_raw_small = found.shadow, found.shadow_raw
+        if found.any():
+            # Brightness excess is measured against the darkest unshadowed
+            # shot, so that a clean shot is not pushed out as if it had
+            # glare; where every covering shot is shadowed, darker wins.
+            # Shadow maps are widened by the halo, like glare, so that the
+            # soft rim of a shadow does not come back through the blur.
+            dilated = [cv2.dilate(s, halo) for s in found.shadow]
+            shadowed = [d >= 0.5 for d in dilated]
+            clean = np.any([m & ~s for m, s in zip(small_m, shadowed)], axis=0)  # some covering shot is unshadowed
+            lum_clean = np.min([np.where(s, np.inf, x) for x, s in zip(lum, shadowed)], axis=0)
+            shadow_w = [np.where(clean, 1 - d, 1).astype(np.float32) for d in dilated]
+    lum_min = np.min(lum, axis=0)
+    if shadow_w is not None:
+        lum_min = np.where(clean, lum_clean, lum_min)
+
     weights_small, glare_fraction, excess_small = [], [], []
     for i in range(n):
         m = small_m[i]
@@ -226,7 +295,10 @@ def fuse(
         glare_w = np.exp(-np.maximum(excess - p.glare_floor, 0) / p.glare_tau)
         dist = cv2.distanceTransform(np.pad(m, 1).astype(np.uint8), cv2.DIST_L2, 5)[1:-1, 1:-1]
         feather = np.clip(dist / feather_px, 1e-3, 1.0)
-        w = np.where(m, (feather * glare_w) ** p.sharpness + 1e-8, 0).astype(np.float32)
+        if shadow_w is None:
+            w = np.where(m, (feather * glare_w) ** p.sharpness + 1e-8, 0).astype(np.float32)
+        else:
+            w = np.where(m, (feather * glare_w * shadow_w[i]) ** p.sharpness + 1e-8, 0).astype(np.float32)
         weights_small.append(w)
         glare_fraction.append(float((excess[m] > p.glare_flag).mean()) if m.any() else 0.0)
     if sigma > 0.5:
@@ -253,4 +325,6 @@ def fuse(
         small,
         small_m,
         excess_small,
+        shadow_small,
+        shadow_raw_small,
     )

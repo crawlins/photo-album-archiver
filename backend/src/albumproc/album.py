@@ -233,7 +233,7 @@ def _write_json(path: Path, obj) -> None:
 
 
 def _page_warnings(page_report: dict, threshold: float) -> list[dict]:
-    """The page's own warnings (glare, coverage, single coverage, curvature), passed through whole.
+    """The page's own warnings (glare, shadow, coverage, single coverage, curvature), passed through whole.
 
     The album's coverage threshold adds an ``incomplete_coverage`` warning
     when the page step raised none (its regions are filtered by area, the

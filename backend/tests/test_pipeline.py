@@ -29,8 +29,9 @@ def test_glare_removed_by_merging_shots(seed):
 
     single = process_page([case.images[res.report.reference]])
     assert score(single.image, case.page).glare_px > 5 * max(s.glare_px, 1e-4)
-    # Merging removed the glare, and the detector agrees.
-    assert "glare" not in _codes(res.report)
+    # Merging removed the glare, and the detector agrees; no shadow is made up.
+    assert "glare" not in _codes(res.report) and "shadow" not in _codes(res.report)
+    assert res.report.shadow["regions"] == []
     assert res.report.glare["fraction"] <= 0.005
     # Every pixel is in all three shots, so nothing is single-covered; the
     # page shot once is single-covered everywhere and says so.
@@ -172,8 +173,8 @@ def test_detector_leaves_the_page_image_unchanged_and_costs_little(sleeve_stitch
 def test_clean_white_page_gets_no_glare_warning():
     case = make_case(30, "clean_white", 3)
     res = process_page(case.images)
-    assert "glare" not in _codes(res.report)
-    assert res.report.glare["regions"] == []
+    assert "glare" not in _codes(res.report) and "shadow" not in _codes(res.report)
+    assert res.report.glare["regions"] == [] and res.report.shadow["regions"] == []
 
 
 def _two_shots(h=600, w=900, seed=5):

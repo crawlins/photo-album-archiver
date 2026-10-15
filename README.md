@@ -53,9 +53,12 @@ the whole page (to get rid of glare) or each show part of an oversized page
    model in the bent strip.
 6. **Fuse.** Tone curves match every shot's exposure and colour to one of
    them. Where shots disagree, the darker one is favoured, because glare only
-   ever adds light. The weights hand over gradually between shots instead of
-   switching per pixel, and edges of partial shots are feathered, so seams
-   blend.
+   ever adds light. A shadow (the phone, a hand) takes light away; with
+   `--shadow`, shots are first compared for shadows (a shadow scales the
+   light and keeps the print's colour, where glare adds white light and
+   washes colour out), and where a shot is shadowed and another is not, the
+   unshadowed one is used there. The weights hand over gradually between shots instead of switching per
+   pixel, and edges of partial shots are feathered, so seams blend.
 
 7. **Check what is left.** A glare detector looks at each shot on its own
    (whiter than its surroundings, washed-out colour, flattened texture,
@@ -63,15 +66,20 @@ the whole page (to get rid of glare) or each show part of an oversized page
    weights it by each shot's share of every composed pixel. What remains is
    grouped into glare regions, each with where it is, which shots saw it and
    why it stayed (`single_shot`: another shot from a different angle fixes
-   it; `all_shots_glared`: change the light). Page area no photo reached is
-   grouped and located the same way. The composed image is not changed.
+   it; `all_shots_glared`: change the light). With `--shadow`, shadows left
+   in the page (where only one photo covers it, or every photo has the same
+   shadow) are found and grouped the same way (`single_shot`,
+   `all_shots_shadowed`). Page area
+   no photo reached is grouped and located the same way. The composed image
+   is not changed by this step.
 
 Every page comes with its metadata, `PAGE.json` next to `PAGE.png` (or at
 `--report`): which photos were used or dropped, coverage, the colour
-correction, the glare and uncovered regions, whether the page was flattened
-(`curvature`: binding side, lift, profile, each photo's alignment, or why
-not), and warnings (`glare`, `incomplete_coverage`, `photos_dropped`,
-`steep_binding`, `curvature_uncorrected`), each with a code and a message:
+correction, the glare, shadow and uncovered regions, whether the page was
+flattened (`curvature`: binding side, lift, profile, each photo's alignment,
+or why not), and warnings (`glare`, `shadow`, `incomplete_coverage`,
+`single_coverage`, `photos_dropped`, `steep_binding`,
+`curvature_uncorrected`), each with a code and a message:
 
 ```json
 {"code": "glare", "fraction": 0.0412, "regions": 1, "single_shot": 1, "location": "bottom-left",
@@ -93,6 +101,16 @@ it reports glare it is sure of and misses much of the faint kind (on synthetic
 stitched pages it finds roughly 5 to 10% of the leftover glare, with false
 alarms under 0.2% of the page; on real sleeved pages it finds almost none).
 Glare no shot sees past is reported, never painted over.
+
+Shadow handling (`--shadow`, off by default) works the same way: a shadow is
+removed where another photo saw that part of the page without it, and
+reported where none did (`shadow` warning). With only two photos of a flat,
+pale area (white paper), a shadow in one and glare in the other look alike,
+so there the darker photo is kept as before; a third photo settles it. It is
+off by default because on real pages where most shots carry the phone's
+shadow somewhere, pushing out the shots found shadowed can let in one whose
+shadow went unseen, and on five of 19 real glare-album pages that made the
+page worse.
 
 A learned detector (`--detector net`, a small CNN run through OpenCV, about
 0.1 s per photo) was trained on 15 real album pages, labelled by comparing
@@ -180,8 +198,9 @@ Re-runs only reprocess pages whose photos changed, and only re-print when just
 the print options changed (`--force` redoes everything). `--jobs N` processes
 pages in parallel. With `SOURCE_DATE_EPOCH` set, the PDF is byte-for-byte
 reproducible. Warnings in the report (`low_resolution`, `upsampled`,
-`aspect_mismatch`, `incomplete_coverage`, `photos_dropped`) say which pages are
-worth shooting again.
+`aspect_mismatch`, `incomplete_coverage`, `photos_dropped`, and each page's
+own, such as `glare`, `shadow` and `single_coverage`, passed through as they
+are) say which pages are worth shooting again.
 
 ## Android capture app
 

@@ -13,6 +13,12 @@ own, farthest first.
 Glare comes in two styles: ``spot`` (soft, flat-topped reflections of a lamp)
 and ``sleeve`` (long, thin, wavy streaks with a clipped core inside a soft
 veil, as a crinkled plastic sleeve reflects a ceiling light).
+
+Shadows (``shadow=``) are the soft silhouette of an arm, a hand or a phone
+held between the light and the page, entering from a page edge. They lie on
+the page, so a shadow in several shots falls on the same part of it. They
+are drawn from their own random stream, so a case with a shadow has the same
+page, shots and glare as the same case without one.
 """
 
 from __future__ import annotations
@@ -28,6 +34,24 @@ class SynthShot:
     image: np.ndarray
     H_scene_to_image: np.ndarray
     glare_mask: np.ndarray  # bool, where glare was added
+    shadow_mask: np.ndarray | None = None  # bool, where a shadow is at least half its depth; None without one
+
+
+SHADOWS = ("none", "one", "all", "part")
+SHADOW_SHAPES = ("arm", "hand", "phone")
+EDGES = ("left", "right", "top", "bottom")
+
+
+@dataclass
+class Shadow:
+    """A cast shadow on the page, in scene coordinates."""
+
+    silhouette: np.ndarray  # float32 0..1, penumbra included, on the scene shrunk by ``scale``
+    scale: float  # silhouette px per scene px
+    depth: float  # share of the light taken away at full shadow, 0..1
+    tint: np.ndarray  # (3,) BGR: the shadow's slight colour from ambient light of another colour
+    shape: str
+    edge: str  # the page edge it enters from
 
 
 @dataclass
@@ -196,6 +220,136 @@ def _sleeve_glare(rng, img, page_poly) -> tuple[np.ndarray, np.ndarray]:
     return out * 255, total > 0.15
 
 
+def make_shadow(
+    rng: np.random.Generator,
+    scene_size: tuple[int, int],
+    page_rect: tuple[int, int, int, int],
+    shape: str | None = None,
+    edge: str | None = None,
+    depth: float | None = None,
+    penumbra: float | None = None,
+    along: float | None = None,
+    reach: float | None = None,
+) -> Shadow:
+    """An arm, hand or phone shadow entering the page from ``edge``.
+
+    ``penumbra`` is the width of the soft edge (10-90% of the depth) as a
+    fraction of the page's long side, 0.5-3% by default; ``depth`` is 0.2-0.6;
+    ``along`` is where on the edge it enters (0..1) and ``reach`` how far in
+    it goes, as a fraction of the page's long side. Unset values are drawn
+    from ``rng``.
+    """
+    shape = shape or str(rng.choice(SHADOW_SHAPES))
+    edge = edge or str(rng.choice(EDGES))
+    if shape not in SHADOW_SHAPES:
+        raise ValueError(shape)
+    if edge not in EDGES:
+        raise ValueError(edge)
+    depth = float(rng.uniform(0.2, 0.6)) if depth is None else depth
+    penumbra = float(rng.uniform(0.005, 0.03)) if penumbra is None else penumbra
+    along = float(rng.uniform(0.2, 0.8)) if along is None else along
+    reach = float(rng.uniform(0.25, 0.45) if shape == "phone" else rng.uniform(0.3, 0.55)) if reach is None else reach
+    tint = rng.uniform(-0.03, 0.03, 3)
+    turn = np.radians(rng.uniform(-25, 25))
+
+    px, py, pw, ph = page_rect
+    L = max(pw, ph)
+    k = 0.25  # drawn on a quarter-size grid, then blurred: the shadow has no fine detail
+    sw, sh = scene_size
+    sil = np.zeros((max(1, round(sh * k)), max(1, round(sw * k))), np.uint8)
+    entry = {"left": (px, py + along * ph), "right": (px + pw, py + along * ph), "top": (px + along * pw, py), "bottom": (px + along * pw, py + ph)}[edge]
+    inward = {"left": 0.0, "right": np.pi, "top": np.pi / 2, "bottom": -np.pi / 2}[edge] + turn
+    d = np.array([np.cos(inward), np.sin(inward)])
+    nrm = np.array([-d[1], d[0]])
+    start = np.array(entry) - d * 0.15 * L  # from beyond the page edge
+    end = np.array(entry) + d * reach * L
+
+    def pt(p):
+        return tuple(int(round(v * k * 16)) for v in p)
+
+    def capsule(a, b, width):
+        r = int(round(width / 2 * k * 16))
+        cv2.line(sil, pt(a), pt(b), 255, max(1, int(round(width * k))), cv2.LINE_AA, 4)
+        cv2.circle(sil, pt(a), r, 255, -1, cv2.LINE_AA, 4)
+        cv2.circle(sil, pt(b), r, 255, -1, cv2.LINE_AA, 4)
+
+    if shape == "phone":
+        # A phone held from the edge's side: a slab with rounded corners,
+        # the hand that holds it hidden in its shadow.
+        width = rng.uniform(0.12, 0.18) * L
+        r = 0.12 * width
+        half = width / 2
+        for p0, p1, side in ((start, end, half - r), (start + d * r, end - d * r, half)):
+            quad = [p0 + nrm * side, p1 + nrm * side, p1 - nrm * side, p0 - nrm * side]
+            cv2.fillConvexPoly(sil, np.array([pt(c) for c in quad], np.int32), 255, cv2.LINE_AA, 4)
+        for c in (start + d * r + nrm * (half - r), end - d * r + nrm * (half - r), end - d * r - nrm * (half - r), start + d * r - nrm * (half - r)):
+            cv2.circle(sil, pt(c), int(round(r * k * 16)), 255, -1, cv2.LINE_AA, 4)
+    else:
+        arm_w = rng.uniform(0.08, 0.13) * L
+        wrist = end if shape == "arm" else end - d * 0.08 * L
+        capsule(start, wrist, arm_w if shape == "arm" else 0.8 * arm_w)
+        if shape == "hand":
+            palm = wrist + d * 0.05 * L
+            axes = (int(round(0.06 * L * k * 16)), int(round(0.05 * L * k * 16)))
+            cv2.ellipse(sil, pt(palm), axes, float(np.degrees(inward)), 0, 360, 255, -1, cv2.LINE_AA, 4)
+            for a in np.radians([-25, -9, 7, 22]) + rng.normal(0, 0.05, 4):
+                f = np.array([np.cos(inward + a), np.sin(inward + a)])
+                capsule(palm + f * 0.04 * L, palm + f * rng.uniform(0.1, 0.13) * L, 0.018 * L)
+            thumb = np.array([np.cos(inward - 1.1), np.sin(inward - 1.1)])
+            capsule(palm, palm + thumb * 0.09 * L, 0.022 * L)
+    sigma = penumbra * L * k / 2.56  # a Gaussian edge rises from 10% to 90% over 2.56 sigma
+    out = cv2.GaussianBlur(sil.astype(np.float32) / 255.0, (0, 0), max(sigma, 0.3))
+    return Shadow(out, k, depth, tint.astype(np.float32), shape, edge)
+
+
+def _srgb_to_linear(v: np.ndarray) -> np.ndarray:
+    return np.where(v <= 0.04045, v / 12.92, ((v + 0.055) / 1.055) ** 2.4)
+
+
+def _linear_to_srgb(v: np.ndarray) -> np.ndarray:
+    return np.where(v <= 0.0031308, v * 12.92, 1.055 * np.maximum(v, 0) ** (1 / 2.4) - 0.055)
+
+
+def _add_shadow(img: np.ndarray, H_scene_to_image: np.ndarray, shadow: Shadow) -> tuple[np.ndarray, np.ndarray]:
+    """Darken ``img`` (as drawn, before the camera) under ``shadow``.
+
+    Light is taken away, so in linear light every channel is scaled by the
+    same ``1 - depth`` at full shadow (give or take the slight tint). Returns
+    the image as float32 in 0..255 and the ground-truth mask, where the
+    shadow is at least half its depth.
+    """
+    h, w = img.shape[:2]
+    k = shadow.scale
+    H = H_scene_to_image @ np.diag([1 / k, 1 / k, 1.0])
+    sil = cv2.warpPerspective(shadow.silhouette, H, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
+    factor = (1 - shadow.depth * sil)[..., None] * (1 + shadow.tint * sil[..., None])
+    lin = _srgb_to_linear(img.astype(np.float32) / 255.0) * factor
+    return (_linear_to_srgb(lin) * 255).astype(np.float32), sil >= 0.5
+
+
+def _shadow_plan(rng: np.random.Generator, shadow: str, scene_size, page_rect, targets) -> list[Shadow | None]:
+    """Which shots get which shadow: ``one`` (the first shot), ``all`` (the same in every shot), ``part``.
+
+    ``part`` shadows the first shot from the page edge on its own side, away
+    from the other shots, reaching into the part they also cover: the shadow
+    lies partly where only that shot sees the page.
+    """
+    n = len(targets)
+    if shadow not in SHADOWS:
+        raise ValueError(shadow)
+    if shadow == "none" or n == 0:
+        return [None] * n
+    if shadow == "part":
+        t0 = np.array(targets[0])
+        rest = np.mean(targets[1:], axis=0) if n > 1 else np.array([0.5, 0.5])
+        dx, dy = t0 - rest
+        edge = ("left" if dx <= 0 else "right") if abs(dx) >= abs(dy) else ("top" if dy <= 0 else "bottom")
+        s = make_shadow(rng, scene_size, page_rect, edge=edge, along=float(rng.uniform(0.35, 0.65)), reach=float(rng.uniform(0.3, 0.4)))
+        return [s] + [None] * (n - 1)
+    s = make_shadow(rng, scene_size, page_rect)
+    return [s] * n if shadow == "all" else [s] + [None] * (n - 1)
+
+
 def make_shots(
     rng: np.random.Generator,
     scene: np.ndarray,
@@ -206,6 +360,8 @@ def make_shots(
     glare: bool = True,
     glare_style: str = "spot",
     render=None,
+    shadow: str | list[Shadow | None] = "none",
+    shadow_rng: np.random.Generator | None = None,
 ) -> list[SynthShot]:
     """Photograph ``scene``; each target is a point in page-relative coords (0..1).
 
@@ -213,15 +369,19 @@ def make_shots(
     above 1 each shot only sees part of the page. ``glare_style`` is ``spot``
     or ``sleeve``. ``render(K, R, C, img_size, interp)``, when given, draws
     the shot instead of warping the flat ``scene`` and returns the image and
-    the page's outline in it.
+    the page's outline in it. ``shadow`` is one of ``SHADOWS`` (see
+    ``_shadow_plan``), drawn from ``shadow_rng``, or a shadow (or None) for
+    each target.
     """
     if glare_style not in ("spot", "sleeve"):
         raise ValueError(glare_style)
+    if isinstance(shadow, str):
+        shadow = _shadow_plan(shadow_rng or np.random.default_rng(0), shadow, scene.shape[1::-1], page_rect, targets)
     px, py, pw, ph = page_rect
     w, h = img_size
     f = 26 / 43.27 * np.hypot(w, h)  # 26 mm-equivalent, a typical phone main camera
     shots = []
-    for tx, ty in targets:
+    for (tx, ty), sh in zip(targets, shadow):
         dist = f * pw / (fill * w)
         K, R, C = _look_at_camera(
             (px + tx * pw, py + ty * ph),
@@ -240,6 +400,9 @@ def make_shots(
             img = cv2.warpPerspective(scene, H, img_size, flags=interp, borderMode=cv2.BORDER_REFLECT)
             page_poly = cv2.perspectiveTransform(np.float32([[px, py], [px + pw, py], [px + pw, py + ph], [px, py + ph]]).reshape(-1, 1, 2), H).reshape(4, 2)
         page_poly = np.clip(page_poly, 0, [w - 1, h - 1])
+        smask = None
+        if sh is not None:  # the shadow darkens the print; glare reflects off the sleeve on top
+            img, smask = _add_shadow(img, H, sh)
         gmask = np.zeros((h, w), bool)
         if glare and glare_style == "sleeve":
             img, gmask = _sleeve_glare(rng, img, page_poly)
@@ -251,7 +414,7 @@ def make_shots(
         img = cv2.GaussianBlur(img, (0, 0), 0.6)
         ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 90])
         img = cv2.imdecode(buf, cv2.IMREAD_COLOR)
-        shots.append(SynthShot(img, H, gmask))
+        shots.append(SynthShot(img, H, gmask, smask))
     return shots
 
 
@@ -390,6 +553,8 @@ def make_case(
     lift: float = 0.03,
     strip: float = 0.12,
     binding: str = "left",
+    shadow: str = "none",
+    glare: bool = True,
 ) -> SynthPage:
     """Build a test case.
 
@@ -413,10 +578,18 @@ def make_case(
     kind="curved_stitch": an oversized page, bent the same way, shot in two
     overlapping halves side by side across the binding: one half holds the
     bent strip, the other the far side of the page.
+    ``shadow`` is one of ``SHADOWS``: ``none``, ``one`` (the first shot has
+    a shadow), ``all`` (every shot has the same shadow) or ``part`` (the
+    first shot has a shadow reaching in from a part of the page only it
+    covers; meant for ``stitch``). ``glare=False`` leaves the glare out of
+    ``glare`` and ``stitch`` shots.
     """
+    if shadow not in SHADOWS:
+        raise ValueError(shadow)
     rng = np.random.default_rng(seed)
+    srng = np.random.default_rng([seed, 7])  # shadows have their own stream, so the rest of the case is unchanged
     if kind in ("curved", "curved_stitch"):
-        return _curved_case(rng, kind, n, glare_style, lift, strip, binding)
+        return _curved_case(rng, kind, n, glare_style, lift, strip, binding, shadow, srng)
     if kind == "stitch" and n >= 4:
         page = make_page(rng, 3200, 2200)
     elif kind == "stitch":
@@ -451,21 +624,23 @@ def make_case(
         rect = (x_page, margin, pw, ph)
         n_close = n - 1 if wide and n >= 2 else n
         targets = [(0.5 + rng.uniform(-0.05, 0.05), 0.5 + rng.uniform(-0.05, 0.05)) for _ in range(max(1, n_close))]
-        shots = make_shots(rng, scene, rect, targets, fill=0.62, glare_style=glare_style)
-        if wide and n >= 2:
+        mid = (len(row) * pw + (len(row) - 1) * gap) / 2 - k_page * (pw + gap)
+        wide_targets = [(mid / pw, 0.5)] if wide and n >= 2 else []
+        plan = _shadow_plan(srng, shadow, scene.shape[1::-1], rect, targets + wide_targets)
+        shots = make_shots(rng, scene, rect, targets, fill=0.62, glare_style=glare_style, shadow=plan[: len(targets)])
+        if wide_targets:
             # A wide shot of the whole row, aimed at its middle.
-            mid = (len(row) * pw + (len(row) - 1) * gap) / 2 - k_page * (pw + gap)
-            shots += make_shots(rng, scene, rect, [(mid / pw, 0.5)], fill=0.36 if len(row) == 2 else 0.25, glare_style=glare_style)
+            shots += make_shots(rng, scene, rect, wide_targets, fill=0.36 if len(row) == 2 else 0.25, glare_style=glare_style, shadow=plan[len(targets) :])
         return SynthPage(page, scene, (x_page, margin), shots)
     scene = make_table(rng, pw + 2 * margin, ph + 2 * margin)
     scene[margin : margin + ph, margin : margin + pw] = page
     rect = (margin, margin, pw, ph)
     if kind == "glare":
         targets = [(0.5 + rng.uniform(-0.04, 0.04), 0.5 + rng.uniform(-0.04, 0.04)) for _ in range(n)]
-        shots = make_shots(rng, scene, rect, targets, fill=0.72, glare_style=glare_style)
+        shots = make_shots(rng, scene, rect, targets, fill=0.72, glare=glare, glare_style=glare_style, shadow=shadow, shadow_rng=srng)
     elif kind == "clean_white":
         targets = [(0.5 + rng.uniform(-0.04, 0.04), 0.5 + rng.uniform(-0.04, 0.04)) for _ in range(n)]
-        shots = make_shots(rng, scene, rect, targets, fill=0.72, glare=False)
+        shots = make_shots(rng, scene, rect, targets, fill=0.72, glare=False, shadow=shadow, shadow_rng=srng)
     elif kind == "stitch":
         if n >= 4:
             targets = [(0.3, 0.3), (0.7, 0.3), (0.3, 0.7), (0.7, 0.7)][:n]
@@ -474,13 +649,13 @@ def make_case(
             targets = [(0.3, 0.5), (0.7, 0.5)]
             fill = 1.2
         targets = [(x + rng.uniform(-0.03, 0.03), y + rng.uniform(-0.03, 0.03)) for x, y in targets]
-        shots = make_shots(rng, scene, rect, targets, fill=fill, glare_style=glare_style)
+        shots = make_shots(rng, scene, rect, targets, fill=fill, glare=glare, glare_style=glare_style, shadow=shadow, shadow_rng=srng)
     else:
         raise ValueError(kind)
     return SynthPage(page, scene, (margin, margin), shots)
 
 
-def _curved_case(rng, kind: str, n: int, glare_style: str, lift: float, strip: float, binding: str) -> SynthPage:
+def _curved_case(rng, kind: str, n: int, glare_style: str, lift: float, strip: float, binding: str, shadow: str = "none", srng=None) -> SynthPage:
     if binding not in BINDINGS:
         raise ValueError(binding)
     stitch = kind == "curved_stitch"
@@ -506,5 +681,5 @@ def _curved_case(rng, kind: str, n: int, glare_style: str, lift: float, strip: f
     else:
         targets, fill = [(0.5, 0.5)] * max(1, n), 0.72
     targets = [(x + rng.uniform(-0.03, 0.03), y + rng.uniform(-0.03, 0.03)) for x, y in targets]
-    shots = make_shots(rng, scene, rect, targets, fill=fill, glare_style=glare_style, render=render)
+    shots = make_shots(rng, scene, rect, targets, fill=fill, glare_style=glare_style, render=render, shadow=shadow, shadow_rng=srng)
     return SynthPage(page, scene, (margin, margin), shots)

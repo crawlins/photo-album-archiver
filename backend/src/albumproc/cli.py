@@ -45,9 +45,11 @@ def _curvature_params(a):
 
 
 def _cmd_page(a) -> int:
+    from .fuse import FuseParams
     from .glare import GlareParams
     from .pipeline import PageOptions, process_page
     from .regions import QualityParams
+    from .shadow import ShadowParams
 
     images = []
     for p in a.photos:
@@ -59,6 +61,7 @@ def _cmd_page(a) -> int:
     opt = PageOptions(
         max_side=a.max_side,
         focal_35mm=a.focal_35mm or None,
+        fuse=FuseParams(shadow=ShadowParams(enabled=a.shadow)),
         glare=GlareParams(detector=a.detector),
         quality=QualityParams(residual_threshold=a.glare_threshold, min_region_area=a.min_region, min_single_area=a.min_single_area),
         curvature=_curvature_params(a),
@@ -75,6 +78,8 @@ def _cmd_page(a) -> int:
             h, w = res.image.shape[:2]
             glare = cv2.resize(res.residual_glare, (w, h), interpolation=cv2.INTER_LINEAR)
             _write_image(a.output.with_suffix(".glare.png"), (glare * 255 + 0.5).clip(0, 255).astype("uint8"))
+            shadow = cv2.resize(res.residual_shadow, (w, h), interpolation=cv2.INTER_LINEAR)
+            _write_image(a.output.with_suffix(".shadow.png"), (shadow * 255 + 0.5).clip(0, 255).astype("uint8"))
             _write_image(a.output.with_suffix(".uncovered.png"), (~res.coverage).astype("uint8") * 255)
             _write_image(a.output.with_suffix(".single.png"), res.single_coverage.astype("uint8") * 255)
         meta.parent.mkdir(parents=True, exist_ok=True)
@@ -162,11 +167,14 @@ def _cmd_straightness(a) -> int:
 def _cmd_synth(a) -> int:
     from .synth import make_case
 
-    case = make_case(a.seed, a.kind, a.n, a.gap, glare_style=a.glare_style, lift=a.lift, strip=a.strip, binding=a.binding)
+    case = make_case(a.seed, a.kind, a.n, a.gap, glare_style=a.glare_style, lift=a.lift, strip=a.strip, binding=a.binding, shadow=a.shadow)
     a.outdir.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(a.outdir / "truth.png"), case.page)
     for i, img in enumerate(case.images):
         cv2.imwrite(str(a.outdir / f"shot_{i:02d}.jpg"), img, [cv2.IMWRITE_JPEG_QUALITY, 95])
+    for i, s in enumerate(case.shots):
+        if s.shadow_mask is not None:  # ground truth, in the shot's own pixels
+            cv2.imwrite(str(a.outdir / f"shot_{i:02d}.shadow.png"), s.shadow_mask.astype("uint8") * 255)
     print(f"wrote {len(case.images)} shots and truth.png to {a.outdir}")
     return 0
 
@@ -274,9 +282,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("photos", nargs="+", type=Path)
     p.add_argument("-o", "--output", type=Path, required=True)
     p.add_argument("--report", type=Path, help="write the page metadata (JSON) here instead of next to the image")
-    p.add_argument("--masks", action="store_true", help="also write PAGE.glare.png, PAGE.uncovered.png and PAGE.single.png")
+    p.add_argument("--masks", action="store_true", help="also write PAGE.glare.png, PAGE.shadow.png, PAGE.uncovered.png and PAGE.single.png")
     p.add_argument("--debug", type=Path, help="write intermediate images to this folder")
-    p.add_argument("--glare-threshold", type=float, default=0.5, help="residual glare counted as glare (0-1)")
+    p.add_argument("--glare-threshold", type=float, default=0.5, help="residual glare (and shadow) counted as glare (and shadow) (0-1)")
+    p.add_argument("--shadow", action="store_true", help="turn shadow handling on: fuse around shadows found by comparing shots, and report the ones left (off by default)")
     p.add_argument("--detector", choices=["features", "net"], default="features", help="single-photo glare detector: hand-made features (default) or the learned model")
     p.add_argument("--min-region", type=float, default=0.0005, help="smallest region reported, as a fraction of the page")
     p.add_argument("--min-single-area", type=float, default=0.01, help="smallest single-covered area warned about, as a fraction of the page")
@@ -344,6 +353,7 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--lift", type=float, default=0.03, help="curved: rise at the binding, fraction of the page across it")
     s.add_argument("--strip", type=float, default=0.12, help="curved: width of the bent strip, fraction of the page across the binding")
     s.add_argument("--binding", choices=["left", "right", "top", "bottom"], default="left", help="curved: the side the page bends at")
+    s.add_argument("--shadow", choices=["none", "one", "all", "part"], default="none", help="a cast shadow in the first shot (one), the same one in every shot (all), or in a part only the first shot covers (part)")
     s.set_defaults(func=_cmd_synth)
 
     a = ap.parse_args(argv)

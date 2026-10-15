@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
 import cv2
@@ -13,7 +13,8 @@ from .curvature import CurvatureFit, CurvatureParams, PageSurface, fit_page, fla
 from .fuse import WEIGHT_MAX_SIDE, FuseParams, fuse
 from .glare import GlareParams, adapt_bias, combine, glare_features, glare_map, net_map, residual, weak_threshold
 from .page import PageQuad, detect_pages, estimate_aspect, focal_px_from_35mm
-from .regions import QualityParams, attach_shot_boxes, glare_regions, page_warnings, shot_outline, single_coverage_regions, uncovered_regions
+from .regions import QualityParams, attach_shot_boxes, glare_regions, page_warnings, shadow_regions, shot_outline, single_coverage_regions, uncovered_regions
+from .shadow import grow, single_shadow
 from .register import register
 
 SCHEMA_VERSION = 3
@@ -54,11 +55,12 @@ class PageReport:
     gains: dict[int, list[float]]
     schema_version: int = SCHEMA_VERSION
     glare: dict = field(default_factory=lambda: {"fraction": 0.0, "per_shot": {}, "regions": []})  # residual glare
+    shadow: dict = field(default_factory=lambda: {"fraction": 0.0, "per_shot": {}, "regions": []})  # residual shadow
     uncovered: dict = field(default_factory=lambda: {"fraction": 0.0, "regions": []})
     single_coverage: dict = field(default_factory=lambda: {"fraction": 0.0, "regions": []})  # covered by exactly one shot
     shots_outline: dict[int, list[list[float]]] = field(default_factory=dict)  # per used shot, its outline on the page in page fractions
     warnings: list[dict] = field(default_factory=list)
-    detector: dict = field(default_factory=dict)  # glare and quality parameters, bias used
+    detector: dict = field(default_factory=dict)  # glare, shadow and quality parameters, bias used
     curvature: dict = field(default_factory=dict)  # see _curvature_report
 
     def to_dict(self) -> dict:
@@ -74,6 +76,7 @@ class PageResult:
     coverage: np.ndarray | None = None  # bool, full resolution: pixel covered by at least one shot
     single_coverage: np.ndarray | None = None  # bool, full resolution: pixel covered by exactly one shot
     surface: PageSurface | None = None  # the bent page model, when the page was treated as curved
+    residual_shadow: np.ndarray | None = None  # float32 0..1 on the detector's grid
 
 
 def _warp_all(images, homographies, size):
@@ -164,7 +167,9 @@ def process_page(images: list[np.ndarray], options: PageOptions | None = None, d
     canvas_size = (int(np.ceil((x1 - x0) * c)), int(np.ceil((y1 - y0) * c)))
     pre_H = [to_canvas @ reg.homographies[i] for i in used]
     pre_w, pre_m = _warp_all([images[i] for i in used], pre_H, canvas_size)
-    preview = fuse(pre_w, pre_m, params=opt.fuse)
+    # Shadows are left alone in the mosaic: it only serves to find the page,
+    # and its outline then stays the same with shadow handling on or off.
+    preview = fuse(pre_w, pre_m, params=replace(opt.fuse, shadow=replace(opt.fuse.shadow, enabled=False)))
 
     # Page candidates from the mosaic (the only view of a stitched page) and
     # from each photo on its own (sharper when one page fills the photo and a
@@ -253,6 +258,7 @@ def process_page(images: list[np.ndarray], options: PageOptions | None = None, d
         glare_fraction={i: round(g, 4) for i, g in zip(used, result.glare_fraction)},
         gains={i: [round(float(x), 3) for x in g] for i, g in zip(used, result.gains)},
         glare=quality.glare,
+        shadow=quality.shadow,
         uncovered=quality.uncovered,
         single_coverage=quality.single,
         shots_outline=quality.outlines,
@@ -270,7 +276,7 @@ def process_page(images: list[np.ndarray], options: PageOptions | None = None, d
         if fit is not None:
             _write_curvature_debug(Path(debug_dir), preview.image, to_canvas, fit, images[ref], used, alignments, (W, H), opt.inset)
 
-    return PageResult(result.image, report, corners_ref, quality.residual, result.coverage, single_full, surface)
+    return PageResult(result.image, report, corners_ref, quality.residual, result.coverage, single_full, surface, quality.residual_shadow)
 
 
 def _homography_mapper(H_page_to_shot: np.ndarray):
@@ -382,10 +388,13 @@ class _Quality:
     detector: dict
     residual: np.ndarray
     maps: list  # per used shot: GlareMap, or None with the detector off
+    shadow: dict = field(default_factory=lambda: {"fraction": 0.0, "per_shot": {}, "regions": []})
+    residual_shadow: np.ndarray | None = None
+    shadow_maps: list | None = None  # per used shot: its shadow for the report, 0..1 on the grid
 
 
 def _assess(result, used: list[int], dropped: list[int], size: tuple[int, int], opt: PageOptions, mappers=None, shot_sizes=None) -> _Quality:
-    """Glare left in the composed page, uncovered and single-covered area, and the warnings.
+    """Glare and shadow left in the composed page, uncovered and single-covered area, and the warnings.
 
     Runs on the grid of ``fuse``'s weights. Each shot's own glare map is
     combined with the comparison against the other shots, then weighted by
@@ -428,9 +437,42 @@ def _assess(result, used: list[int], dropped: list[int], size: tuple[int, int], 
         "fraction": round(float((count[covered] == 1).mean()) if covered.any() else 0.0, 4),
         "regions": boxed(single_coverage_regions(count, used, masks, size, q)),
     }
+    sp = opt.fuse.shadow
+    if sp.enabled and result.shadow_raw_small is not None:
+        # Each shot's shadow: what comparison found (whether or not fusion
+        # removed it), grown into the part of the shot no other covers, and
+        # what the shot alone shows strongly away from its glare. Weighted by
+        # the share each shot had in the composed pixel, so a shadow fusion
+        # avoided does not count.
+        # Where only this shot covers the page, the single-image cue follows
+        # a shadow comparison found out of the overlap. Where shots overlap,
+        # a shadow no comparison found is one every covering shot has: the
+        # cue counts there only as far as all of them agree, and with a
+        # stricter rim (``edge_cover``), since a false warning sends the
+        # user back to re-shoot a good page.
+        loose = replace(sp, edge_cover=sp.grow_edge_cover)
+        singles = [single_shadow(t, m, sp, g) for t, m, g in zip(result.toned_small, masks, per)]
+        agree = np.min([np.where(m, c, np.inf) for c, m in zip(singles, masks)], axis=0)
+        agree = np.where(np.isfinite(agree), agree, 0)
+        sh_maps = []
+        for raw, c, t, m, g in zip(result.shadow_raw_small, singles, result.toned_small, masks, per):
+            alone = m & (count == 1)
+            if alone.any():
+                c = single_shadow(t, m, loose, g)
+            sh_maps.append(np.maximum(raw, grow(raw, np.where(count == 1, c, agree), alone, sp)))
+        res_sh = residual(sh_maps, result.weights_small)
+    else:
+        sh_maps = [np.zeros(grid, np.float32) for _ in used]
+        res_sh = np.zeros(grid, np.float32)
+    shadow = {
+        "fraction": round(float((res_sh[covered] >= q.residual_threshold).mean()) if covered.any() else 0.0, 4),
+        "per_shot": {i: round(float((g[m] >= q.residual_threshold).mean()) if m.any() else 0.0, 4) for i, g, m in zip(used, sh_maps, masks)},
+        "regions": boxed(shadow_regions(res_sh, count, used, masks, size, q)),
+    }
     outlines = {i: shot_outline(m) for i, m in zip(used, masks)}
-    detector = {"bias": round(float(bias), 4), "bias_adapted": adapted, "glare": asdict(gp), "quality": asdict(q)}
-    return _Quality(glare, uncovered, single, outlines, page_warnings(glare, uncovered, dropped, single), detector, res, maps)
+    detector = {"bias": round(float(bias), 4), "bias_adapted": adapted, "glare": asdict(gp), "shadow": asdict(sp), "quality": asdict(q)}
+    warnings = page_warnings(glare, uncovered, dropped, single, shadow)
+    return _Quality(glare, uncovered, single, outlines, warnings, detector, res, maps, shadow, res_sh, sh_maps)
 
 
 def _touch(q: np.ndarray, valid: np.ndarray) -> float:
@@ -492,7 +534,16 @@ def _write_debug(d: Path, preview, quad, to_canvas, result, used, quality: _Qual
         img = cv2.cvtColor((g.score * 255).astype(np.uint8), cv2.COLOR_GRAY2BGR)
         img[g.glare > 0] = (0, 0, 255)
         cv2.imwrite(str(d / f"glare_{i:02d}.png"), img)
-    cv2.imwrite(str(d / "quality_overlay.jpg"), quality_overlay(result.image, quality.glare["regions"], quality.uncovered["regions"], quality.single["regions"]))
+    # Each shot's shadow maps: what fusion avoided in blue, what the report counts in red.
+    if result.shadow_small is not None:
+        for i, s_fuse, s_rep in zip(used, result.shadow_small, quality.shadow_maps or result.shadow_raw_small):
+            img = np.zeros(s_fuse.shape + (3,), np.uint8)
+            img[..., 0] = (np.clip(s_fuse, 0, 1) * 255).astype(np.uint8)
+            img[..., 2] = (np.clip(s_rep, 0, 1) * 255).astype(np.uint8)
+            cv2.imwrite(str(d / f"shadow_{i:02d}.png"), img)
+    if result.shadow_small is not None and quality.residual_shadow is not None:
+        cv2.imwrite(str(d / "shadow_residual.png"), (np.clip(quality.residual_shadow, 0, 1) * 255).astype(np.uint8))
+    cv2.imwrite(str(d / "quality_overlay.jpg"), quality_overlay(result.image, quality.glare["regions"], quality.uncovered["regions"], quality.single["regions"], quality.shadow["regions"]))
 
 
 def _write_curvature_debug(d: Path, mosaic, to_canvas, fit: CurvatureFit, reference, used, alignments, size, inset):
@@ -539,11 +590,11 @@ def _write_curvature_debug(d: Path, mosaic, to_canvas, fit: CurvatureFit, refere
         cv2.imwrite(str(d / f"align_{i:02d}.png"), cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR))
 
 
-def quality_overlay(image: np.ndarray, glare_regions: list[dict], uncovered_regions: list[dict], single_regions: list[dict] = ()) -> np.ndarray:
-    """The composed page with glare regions boxed in magenta, uncovered ones in cyan and single-covered ones in yellow, numbered."""
+def quality_overlay(image: np.ndarray, glare_regions: list[dict], uncovered_regions: list[dict], single_regions: list[dict] = (), shadow_regions: list[dict] = ()) -> np.ndarray:
+    """The composed page with glare regions boxed in magenta, uncovered ones in cyan, single-covered ones in yellow and shadows in blue, numbered."""
     vis = image.copy()
     t = max(2, round(max(image.shape[:2]) / 600))
-    for regions, colour in ((glare_regions, (255, 0, 255)), (uncovered_regions, (255, 255, 0)), (single_regions, (0, 255, 255))):
+    for regions, colour in ((glare_regions, (255, 0, 255)), (uncovered_regions, (255, 255, 0)), (single_regions, (0, 255, 255)), (shadow_regions, (255, 64, 0))):
         for k, r in enumerate(regions):
             x0, y0, x1, y1 = r["bbox_px"]
             cv2.rectangle(vis, (x0, y0), (x1, y1), colour, t)
