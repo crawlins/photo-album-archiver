@@ -44,6 +44,12 @@ def _curvature_params(a):
     return CurvatureParams(mode=a.curvature, binding=a.binding)
 
 
+def _sleeve_params(a):
+    from .sleeve import SleeveParams
+
+    return SleeveParams(mode=a.sleeve, crop=a.crop)
+
+
 def _cmd_page(a) -> int:
     from .fuse import FuseParams
     from .glare import GlareParams
@@ -65,6 +71,7 @@ def _cmd_page(a) -> int:
         glare=GlareParams(detector=a.detector),
         quality=QualityParams(residual_threshold=a.glare_threshold, min_region_area=a.min_region, min_single_area=a.min_single_area),
         curvature=_curvature_params(a),
+        sleeve=_sleeve_params(a),
     )
     res = process_page(images, opt, debug_dir=a.debug)
     a.output.parent.mkdir(parents=True, exist_ok=True)
@@ -167,7 +174,10 @@ def _cmd_straightness(a) -> int:
 def _cmd_synth(a) -> int:
     from .synth import make_case
 
-    case = make_case(a.seed, a.kind, a.n, a.gap, glare_style=a.glare_style, lift=a.lift, strip=a.strip, binding=a.binding, shadow=a.shadow)
+    from .synth import SleeveSpec
+
+    sleeve = SleeveSpec(binding=a.binding) if a.sleeve else None
+    case = make_case(a.seed, a.kind, a.n, a.gap, glare_style=a.glare_style, lift=a.lift, strip=a.strip, binding=a.binding, shadow=a.shadow, sleeve=sleeve)
     a.outdir.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(a.outdir / "truth.png"), case.page)
     for i, img in enumerate(case.images):
@@ -223,7 +233,7 @@ def _cmd_album(a) -> int:
     from .pipeline import PageOptions
 
     opt = AlbumOptions(
-        page=PageOptions(max_side=a.max_side, focal_35mm=a.focal_35mm or None, curvature=_curvature_params(a)),
+        page=PageOptions(max_side=a.max_side, focal_35mm=a.focal_35mm or None, curvature=_curvature_params(a), sleeve=_sleeve_params(a)),
         print=_print_options(a, a.format),
         page_size=a.page_size,
         strict=a.strict,
@@ -277,6 +287,8 @@ def main(argv: list[str] | None = None) -> int:
     def curvature_args(q):
         q.add_argument("--curvature", choices=["auto", "off", "force"], default="auto", help="flatten pages bent near their binding: when they look bent (auto), never, or always")
         q.add_argument("--binding", choices=["auto", "left", "right", "top", "bottom"], default="auto", help="the page side nearest the album's spine (default: found from the photos)")
+        q.add_argument("--sleeve", choices=["auto", "off"], default="auto", help="find the paper inside a clear album sleeve (auto), or take the page outline as found (off)")
+        q.add_argument("--crop", choices=["paper", "sleeve"], default="paper", help="crop a sleeved page to the paper (default) or to the sleeve around it")
 
     p = sub.add_parser("page", help="merge several photos of one page into a clean page image")
     p.add_argument("photos", nargs="+", type=Path)
@@ -352,7 +364,8 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--glare-style", choices=["spot", "sleeve"], default="spot")
     s.add_argument("--lift", type=float, default=0.03, help="curved: rise at the binding, fraction of the page across it")
     s.add_argument("--strip", type=float, default=0.12, help="curved: width of the bent strip, fraction of the page across the binding")
-    s.add_argument("--binding", choices=["left", "right", "top", "bottom"], default="left", help="curved: the side the page bends at")
+    s.add_argument("--binding", choices=["left", "right", "top", "bottom"], default="left", help="curved: the side the page bends at; sleeve: the binding strip's side")
+    s.add_argument("--sleeve", action="store_true", help="put the page in an album sleeve (glare, stitch and curved kinds)")
     s.add_argument("--shadow", choices=["none", "one", "all", "part"], default="none", help="a cast shadow in the first shot (one), the same one in every shot (all), or in a part only the first shot covers (part)")
     s.set_defaults(func=_cmd_synth)
 

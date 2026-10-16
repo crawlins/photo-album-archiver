@@ -145,16 +145,36 @@ Nothing is implemented; every task (1.1 to 7) is open. Blocked on PR #1.
   labels stay in `crawlins/photo-album-archiver-data`; only the exported
   model and the numbers come here.
 
+## Paper edge inside a sleeve (`sleeve-paper-edge`, implemented, short of its targets)
+
+Tasks 1 to 7 are implemented; the paper-edge labels in the data repository
+await Clark's check (`real/paper-edges.md` there). Open:
+
+- [ ] **Synthetic accuracy** (R8.2, R8.3): about half of the single-shot
+  sleeved cases meet the corner and edge tolerances, and band kinds are right
+  on about a third of the sides, against 100% and 95%. A narrow clear gap
+  inside a crimp and a narrow paper margin before a print look alike, and the
+  binding strip is missed when it is close to the paper's colour.
+- [ ] **Real pages** (R8.5): page-three and page-five meet the corner and
+  edge tolerances; page-two's bottom-right corner is 0.7% off; grandma-wilson
+  misses its left edge; page-four is not recognised as sleeved (no strip or
+  free-side edge found) and keeps today's outline. No page is worse than
+  before the sleeve step. Curvature `auto` now flattens page-three and
+  page-five; `force` picks the bottom as page-two's and page-four's binding
+  instead of the right (R8.6). On the side away from the binding the next pages
+  under the sleeve end where the paper does, so the edge is only taken within
+  1% of the width of the page detection's.
+- [ ] **Using the whole album**: the paper's size and the band widths are the
+  same on every page of an album (design, out of scope).
+
 ## Page curvature (`page-curvature`, implemented)
 
 Tasks 1 to 7 are implemented. The neighbouring page's side is found from the
 page candidates (`pipeline._neighbour_side`). Open:
 
-- [ ] **Real pages are not flattened.** On the five real sleeved pages the
-  traced outline jumps between the sleeve's and the paper's edges, so `auto`
-  treats all five as flat (`small_gain` on four, `fit_failed` on one), and
-  `force` picks a wrong binding side on two. Tracing the paper's own edge
-  inside the sleeve is the next step.
+- [ ] **Real pages are not flattened.** The sleeve step (`sleeve-paper-edge`)
+  now gives the curvature fit the paper's own traced edges and the strip's
+  side; see that section for how far it gets on the real pages.
 - [ ] **Strip MAE on two-shot pages** (R8.5): 1.4 times the rest of the page
   on the synthetic two-shot case, not 1.2.
 - [ ] **Lift accuracy at 0.5%** (design test plan): within 30% on the

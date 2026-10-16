@@ -270,6 +270,50 @@ def initial_surface(corners_ref: np.ndarray, K: np.ndarray, aspect: float, bindi
 # --- Evidence: the outline ---------------------------------------------------
 
 
+def side_frame(a: np.ndarray, b: np.ndarray) -> tuple[float, np.ndarray, np.ndarray]:
+    """Length, unit direction and outward normal of the side from ``a`` to ``b`` of a TL, TR, BR, BL quad."""
+    length = float(np.linalg.norm(b - a))
+    d = (b - a) / max(length, 1e-9)
+    return length, d, np.array([d[1], -d[0]])  # outward for TL, TR, BR, BL on screen
+
+
+def side_strip(img: np.ndarray, inner: np.ndarray, a: np.ndarray, b: np.ndarray, t: np.ndarray, offs: np.ndarray, blur: bool = True) -> tuple[np.ndarray, np.ndarray]:
+    """The image straightened along the side from ``a`` to ``b``: (Lab float32 (rows, cols, 3), seen (rows, cols)).
+
+    Columns are at fractions ``t`` along the side, rows at ``offs`` pixels
+    along its outward normal. ``inner`` is the (eroded) mask of what was
+    photographed.
+    """
+    _, _, n = side_frame(a, b)
+    pts = a + t[None, :, None] * (b - a) + offs[:, None, None] * n
+    mx, my = pts[..., 0].astype(np.float32), pts[..., 1].astype(np.float32)
+    strip = cv2.remap(img, mx, my, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+    if blur:
+        strip = cv2.GaussianBlur(strip, (5, 5), 0)
+    strip = cv2.cvtColor(strip, cv2.COLOR_BGR2LAB).astype(np.float32)
+    ok = cv2.remap(inner, mx, my, cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=0) > 0
+    return strip, ok
+
+
+def subpixel_rows(g: np.ndarray, rows: np.ndarray, mid: np.ndarray) -> np.ndarray:
+    """Offsets of a path through ``g`` (rows of edge strength between ``mid`` offsets), to a fraction of a pixel.
+
+    The peak of a parabola through the edge strength at the chosen row and
+    its neighbours.
+    """
+    cols = np.arange(g.shape[1])
+    r0 = np.clip(rows, 1, len(mid) - 2)
+    gm, g0, gp = g[r0 - 1, cols], g[r0, cols], g[r0 + 1, cols]
+    den = gm - 2 * g0 + gp
+    sub = np.where(den < 0, 0.5 * (gm - gp) / np.where(den < 0, den, -1), 0.0)
+    return mid[r0] + np.clip(sub, -0.5, 0.5)
+
+
+def eroded_valid(valid: np.ndarray) -> np.ndarray:
+    """What was photographed, shrunk by a few pixels, as uint8."""
+    return cv2.erode(np.asarray(valid, np.uint8), np.ones((9, 9), np.uint8), borderType=cv2.BORDER_CONSTANT, borderValue=0)
+
+
 def trace_outline(img: np.ndarray, valid: np.ndarray, quad: np.ndarray, band: float) -> list[np.ndarray | None]:
     """The page's outline near each side of ``quad``, as traced curves.
 
@@ -281,7 +325,7 @@ def trace_outline(img: np.ndarray, valid: np.ndarray, quad: np.ndarray, band: fl
     side is not seen (cut off by the edge of what was photographed, or no
     clear edge).
     """
-    inner = cv2.erode(np.asarray(valid, np.uint8), np.ones((9, 9), np.uint8), borderType=cv2.BORDER_CONSTANT, borderValue=0)
+    inner = eroded_valid(valid)
     q = np.asarray(quad, np.float64).reshape(4, 2)
     diag = max(np.linalg.norm(q[2] - q[0]), np.linalg.norm(q[3] - q[1]))
     B = max(4, int(round(band * diag)))
@@ -289,15 +333,9 @@ def trace_outline(img: np.ndarray, valid: np.ndarray, quad: np.ndarray, band: fl
     out: list[np.ndarray | None] = []
     for k in range(4):
         a, b = q[k], q[(k + 1) % 4]
-        length = float(np.linalg.norm(b - a))
-        d = (b - a) / max(length, 1e-9)
-        n = np.array([d[1], -d[0]])  # outward for TL, TR, BR, BL on screen
+        length, _, n = side_frame(a, b)
         t = np.linspace(0.02, 0.98, int(np.clip(length / 2, 50, 1200)))
-        pts = a + t[None, :, None] * (b - a) + offs[:, None, None] * n
-        mx, my = pts[..., 0].astype(np.float32), pts[..., 1].astype(np.float32)
-        strip = cv2.remap(img, mx, my, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
-        strip = cv2.cvtColor(cv2.GaussianBlur(strip, (5, 5), 0), cv2.COLOR_BGR2LAB).astype(np.float32)
-        ok = cv2.remap(inner, mx, my, cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=0) > 0
+        strip, ok = side_strip(img, inner, a, b, t, offs)
         g = np.sqrt((np.diff(strip, axis=0) ** 2).sum(axis=2))  # edge strength across the side, between rows
         g = cv2.blur(g, (5, 1))
         g[~(ok[1:] & ok[:-1])] = 0
@@ -314,14 +352,7 @@ def trace_outline(img: np.ndarray, valid: np.ndarray, quad: np.ndarray, band: fl
         if float(np.mean(on)) < 0.2 or float(np.mean(seen)) < 0.8:
             out.append(None)
             continue
-        # To a fraction of a pixel: the peak of a parabola through the edge
-        # strength at the chosen row and its neighbours.
-        cols = np.arange(len(t))
-        r0 = np.clip(rows, 1, len(mid) - 2)
-        gm, g0, gp = g[r0 - 1, cols], g[r0, cols], g[r0 + 1, cols]
-        den = gm - 2 * g0 + gp
-        sub = np.where(den < 0, 0.5 * (gm - gp) / np.where(den < 0, den, -1), 0.0)
-        off = mid[r0] + np.clip(sub, -0.5, 0.5)
+        off = subpixel_rows(g, rows, mid)
         out.append((a + t[:, None] * (b - a) + off[:, None] * n).astype(np.float64))
     return out
 
@@ -751,17 +782,26 @@ def fit_page(
     aspect: float,
     p: CurvatureParams,
     neighbour_side: str | None = None,
+    outline: list[np.ndarray | None] | None = None,
+    binding_hint: str | None = None,
 ) -> CurvatureFit:
     """Decide whether the page in ``mosaic`` is bent, and if so how.
 
     ``quad`` is the detected page in ``mosaic``, ``to_mosaic`` maps the
     reference photo's full-resolution pixels into it, ``K`` is the reference
     camera and ``aspect`` the flat page's measured width/height.
+    ``outline``, when given, is the page's sides already traced (top, right,
+    bottom, left, None where not found), used instead of tracing ``quad``'s.
+    ``neighbour_side`` and ``binding_hint`` (a sleeve's binding strip) are
+    sides the binding is likely on; each gets the ``neighbour_bonus``, once
+    when both name the same side.
     """
     if p.mode == "off":
         return CurvatureFit(None, 0.0, 0.0, 0.0, 0.0, "off", 0)
     quad = np.asarray(quad, np.float64).reshape(4, 2)
-    outline = trace_outline(mosaic, valid, quad, p.outline_band)
+    if outline is None:
+        outline = trace_outline(mosaic, valid, quad, p.outline_band)
+    hinted = {s for s in (neighbour_side, binding_hint) if s is not None}
     width_px = (np.linalg.norm(quad[1] - quad[0]) + np.linalg.norm(quad[2] - quad[3])) / 2
     bows = side_bows(outline, width_px)
     failed = CurvatureFit(None, 0.0, 0.0, 0.0, 0.0, "fit_failed", 0, bows=bows, outline=outline)
@@ -781,7 +821,7 @@ def fit_page(
         # A quick look at each side: the bend alone, on the flat fit's pose.
         start = replace(init, binding=side)
         look = fit_surface(outline, [], replace(planar1.surface, binding=side), to_mosaic, p, curved=True, pose=False)
-        ratio = look.cost / max(planar1.cost, 1e-9) * (p.neighbour_bonus if side == neighbour_side else 1.0)
+        ratio = look.cost / max(planar1.cost, 1e-9) * (p.neighbour_bonus if side in hinted else 1.0)
         first[side] = (start, look, ratio if look.converged else np.inf)
     best1 = min(r for _, _, r in first.values())
     straight = max(bows.values(), default=0.0) < p.min_lift  # no side bows as a bent page's do
@@ -794,7 +834,7 @@ def fit_page(
         # hidden. With most of the outline seen and straight, it decides (see
         # _cost), so a side where it shows no sign of a bend is settled by the
         # quick look.
-        promising = ratio1 <= 1.25 * best1 + 0.05 or not seen or side == neighbour_side
+        promising = ratio1 <= 1.25 * best1 + 0.05 or not seen or side in hinted
         quiet = traced >= 3 and seen and straight and (look.surface.max_lift() < p.min_lift / 3 or ratio1 > 1 - p.min_improvement / 2)
         if (quiet and p.mode != "force") or not promising:
             if look.converged and _sane(look.surface, traced_corners, to_mosaic, diag, p):
@@ -813,7 +853,7 @@ def fit_page(
         if not (curved2.converged and planar2.converged) or not _sane(curved2.surface, traced_corners, to_mosaic, diag, p):
             continue
         ratio = _cost(curved2, traced) / max(_cost(planar2, traced), 1e-9)
-        if side == neighbour_side:
+        if side in hinted:
             ratio *= p.neighbour_bonus
         found.append((ratio, side, planar2, curved2, len(lines), False))
     if not found:
@@ -878,17 +918,24 @@ def grid_shape(size: tuple[int, int], step: int) -> tuple[int, int]:
     return (H - 1) // step + 2, (W - 1) // step + 2
 
 
-def page_fractions(size: tuple[int, int], inset: float, step: int) -> tuple[np.ndarray, np.ndarray]:
+def page_fractions(size: tuple[int, int], inset: float, step: int, extend: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)) -> tuple[np.ndarray, np.ndarray]:
     """Page fractions at the coarse nodes of an output of ``size``, through the inset trim.
 
     As in the flat path, the page's edges sit ``inset`` of the size outside
     the output rectangle, so a sliver of background at the edge is trimmed.
+    ``extend`` (left, top, right, bottom, as fractions of the page's width
+    for the first and third and of its height for the others) grows the
+    output beyond the page, as for a sleeve crop.
     """
     W, H = size
     gh, gw = grid_shape(size, step)
     U, V = np.meshgrid(np.arange(gw) * step, np.arange(gh) * step)
     dx, dy = inset * W, inset * H
-    return (U + dx) / (W - 1 + 2 * dx), (V + dy) / (H - 1 + 2 * dy)
+    fx, fy = (U + dx) / (W - 1 + 2 * dx), (V + dy) / (H - 1 + 2 * dy)
+    if any(extend):
+        el, et, er, eb = extend
+        fx, fy = -el + (1 + el + er) * fx, -et + (1 + et + eb) * fy
+    return fx, fy
 
 
 def output_size(surface: PageSurface, max_side: int) -> tuple[int, int]:
@@ -916,13 +963,14 @@ def output_size(surface: PageSurface, max_side: int) -> tuple[int, int]:
     return max(2, int(round(W * k))), max(2, int(round(H * k)))
 
 
-def flatten_maps(surface: PageSurface, size: tuple[int, int], inset: float, H_ref_from_shot: list[np.ndarray], step: int = 8) -> list[np.ndarray]:
+def flatten_maps(surface: PageSurface, size: tuple[int, int], inset: float, H_ref_from_shot: list[np.ndarray], step: int = 8, extend: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)) -> list[np.ndarray]:
     """For each shot, where each coarse output node is in that shot: (rows, cols, 2) float32.
 
-    Output pixel -> page fraction (with the inset) -> page surface ->
-    reference photo -> shot, through the inverse of the shot's homography.
+    Output pixel -> page fraction (with the inset, and ``extend`` as in
+    ``page_fractions``) -> page surface -> reference photo -> shot, through
+    the inverse of the shot's homography.
     """
-    fx, fy = page_fractions(size, inset, step)
+    fx, fy = page_fractions(size, inset, step, extend)
     ref = surface.project(fx.ravel(), fy.ravel()).reshape(-1, 1, 2)
     return [cv2.perspectiveTransform(ref, np.linalg.inv(H)).reshape(*fx.shape, 2).astype(np.float32) for H in H_ref_from_shot]
 

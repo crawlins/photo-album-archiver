@@ -37,9 +37,11 @@ REPORT = "report.json"
 REPORT_VERSION = 1
 DEFAULT_PAGE_SIZE = PageSize(8.5, 11)  # US letter, the capture app's default for a new album
 _ALBUM_KEYS = {"title", "page_size", "fit", "pages"}
-_PAGE_KEYS = {"folder", "name", "page_size", "rotate", "fit", "curvature", "binding"}
+_PAGE_KEYS = {"folder", "name", "page_size", "rotate", "fit", "curvature", "binding", "sleeve", "crop"}
 CURVATURE_MODES = ("auto", "off", "force")
 BINDINGS = ("auto", "left", "right", "top", "bottom")
+SLEEVE_MODES = ("auto", "off")
+CROPS = ("paper", "sleeve")
 
 
 class AlbumError(ValueError):
@@ -62,6 +64,8 @@ class PageSpec:
     fit: str | None = None  # None: the album options' fit
     curvature: str | None = None  # None: the album options' curvature mode
     binding: str | None = None  # None: the album options' binding side
+    sleeve: str | None = None  # None: the album options' sleeve mode
+    crop: str | None = None  # None: the album options' crop
     problem: str | None = None  # why the page cannot be processed, found during discovery
 
     @property
@@ -194,6 +198,8 @@ def discover_album(folder: str | Path, default_size: PageSize | None = None) -> 
                     fit=_check_fit(e["fit"], where) if "fit" in e else album_fit,
                     curvature=_check_choice(e["curvature"], CURVATURE_MODES, "curvature", where) if "curvature" in e else None,
                     binding=_check_choice(e["binding"], BINDINGS, "binding", where) if "binding" in e else None,
+                    sleeve=_check_choice(e["sleeve"], SLEEVE_MODES, "sleeve", where) if "sleeve" in e else None,
+                    crop=_check_choice(e["crop"], CROPS, "crop", where) if "crop" in e else None,
                     problem=problem,
                 )
             )
@@ -250,11 +256,12 @@ def _page_warnings(page_report: dict, threshold: float) -> list[dict]:
 
 
 def _page_options(base: PageOptions, page: PageSpec) -> PageOptions:
-    """The pipeline options for one page: the album's, with the page's own curvature settings."""
-    if page.curvature is None and page.binding is None:
+    """The pipeline options for one page: the album's, with the page's own curvature and sleeve settings."""
+    if page.curvature is None and page.binding is None and page.sleeve is None and page.crop is None:
         return base
     cp = replace(base.curvature, mode=page.curvature or base.curvature.mode, binding=page.binding or base.curvature.binding)
-    return replace(base, curvature=cp)
+    sp = replace(base.sleeve, mode=page.sleeve or base.sleeve.mode, crop=page.crop or base.sleeve.crop)
+    return replace(base, curvature=cp, sleeve=sp)
 
 
 @dataclass
