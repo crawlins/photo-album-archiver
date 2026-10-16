@@ -32,6 +32,18 @@ the whole page (to get rid of glare) or each show part of an oversized page
    edges belong to the page), and when it takes in background. Photos are
    assumed upright, so neighbours lie left and right. Pages cut off by the
    edge of what was photographed are discounted.
+   **Inside a sleeve,** the outline found may lie on the sleeve's crimped
+   seam, its binding strip or the paper, differently on each side. A strip
+   around each side is searched for edges running the side's length, the
+   bands between them are told apart (crimp: ridged across; strip: plain,
+   about as light as the paper but not like it; clear plastic; paper), and
+   the paper's four edges are chosen together, each traced within a narrow
+   band so it cannot jump to the sleeve's. The page is then cropped to the
+   paper (`--crop sleeve` keeps the sleeve's bands around it), the bent-page
+   fit below uses the paper's edges, and the strip's side counts as the
+   binding's. A page with no crimp or strip found, or whose paper is found
+   on fewer than three sides, is processed exactly as before (`sleeve` in
+   the page metadata says why; `--sleeve off` skips the step).
 3. **True proportions** from the perspective geometry of the corners
    (Zhang & He), using the phone's focal length (26 mm equivalent by default,
    or the real one from EXIF via `--focal-35mm`).
@@ -77,9 +89,12 @@ Every page comes with its metadata, `PAGE.json` next to `PAGE.png` (or at
 `--report`): which photos were used or dropped, coverage, the colour
 correction, the glare, shadow and uncovered regions, whether the page was
 flattened (`curvature`: binding side, lift, profile, each photo's alignment,
-or why not), and warnings (`glare`, `shadow`, `incomplete_coverage`,
-`single_coverage`, `photos_dropped`, `steep_binding`,
-`curvature_uncorrected`), each with a code and a message:
+or why not), what was taken for sleeve and paper (`sleeve`: whether the page
+was treated as sleeved or why not, the crop, the strip's side, and per side
+the sleeve's bands from the outside in with their widths), and warnings
+(`glare`, `shadow`, `incomplete_coverage`, `single_coverage`,
+`photos_dropped`, `steep_binding`, `curvature_uncorrected`,
+`paper_edge_uncertain`), each with a code and a message:
 
 ```json
 {"code": "glare", "fraction": 0.0412, "regions": 1, "single_shot": 1, "location": "bottom-left",
@@ -131,7 +146,7 @@ checked by the server and shown by the app.
 ```sh
 cd backend
 python3 -m pip install -e '.[test]'
-albumproc page shot1.jpg shot2.jpg shot3.jpg -o page.png --debug debug/   # also writes page.json; debug/ gets curvature_outline.jpg, _profile.png, _grid.jpg, align_NN.png
+albumproc page shot1.jpg shot2.jpg shot3.jpg -o page.png --debug debug/   # also writes page.json; debug/ gets sleeve.jpg, curvature_outline.jpg, _profile.png, _grid.jpg, align_NN.png
 albumproc page shot*.jpg -o page.png --masks     # also page.glare.png, page.uncovered.png and page.single.png
 albumproc glare shot1.jpg --overlay checked/     # glare in single photos, before processing a page
 albumproc glare-eval page.json --truth drawn.png # score page.glare.png against a hand-drawn mask
@@ -140,6 +155,8 @@ albumproc synth samples/ --kind stitch -n 2 --glare-style sleeve   # long sleeve
 albumproc synth samples/ --kind pair --gap 0    # pages touching, as in an open album
 albumproc synth samples/ --kind curved --lift 0.03 --binding left -n 2   # a page bent near its binding
 albumproc page shot*.jpg -o page.png --curvature force --binding left   # always flatten, bent at the left (default: auto)
+albumproc page shot*.jpg -o page.png --crop sleeve   # a sleeved page with its sleeve; --sleeve off takes the page outline as found
+albumproc synth samples/ --kind glare -n 2 --sleeve --binding left   # a page in an album sleeve, binding strip on the left
 albumproc straightness page.png --overlay lines.jpg   # how straight long lines are, to compare before and after
 python3 -m pytest
 ```
@@ -174,14 +191,16 @@ page order, with per-page overrides:
     {"folder": "cover", "name": "Front cover", "page_size": "10.5x12.5in"},
     "page-01",
     {"folder": "page-02", "rotate": 90, "fit": "fit"},
-    {"folder": "page-03", "curvature": "force", "binding": "left"}
+    {"folder": "page-03", "curvature": "force", "binding": "left"},
+    {"folder": "page-04", "crop": "sleeve"}
   ]
 }
 ```
 
 `curvature` (`auto`, `off`, `force`) and `binding` (`auto`, `left`, `right`,
-`top`, `bottom`) override `--curvature` and `--binding` for one page; changing
-them reprocesses that page.
+`top`, `bottom`) override `--curvature` and `--binding` for one page, and
+`sleeve` (`auto`, `off`) and `crop` (`paper`, `sleeve`) override `--sleeve`
+and `--crop`; changing them reprocesses that page.
 
 Output:
 
@@ -381,9 +400,16 @@ it listens on another address without TLS. Either:
   seen at the binding. It does not handle wavy or cockled paper, dog-eared
   corners, sleeve wrinkles, content hidden in the gutter (a `steep_binding`
   warning asks for another shot), or the darker shading near the binding.
-  On the five real sleeved pages the outline traces jump between the
-  sleeve's and the paper's edges, so `auto` keeps all five flat; see
-  `curvature` in the page metadata and `--debug`'s `curvature_*.jpg`.
+  On the five real sleeved pages, with the paper's own edges traced inside
+  the sleeve, `auto` flattens page-three and page-five and keeps the other
+  three flat; see `curvature` in the page metadata and `--debug`'s
+  `curvature_*.jpg`.
+- Sleeves: the paper's edge is found on four of the five real sleeved pages
+  (not on page-four, which keeps the outline found before), and within the
+  spec's tolerance on two; on the side away from the binding the edge is only
+  taken within 1% of the page detection's, since the next pages under the
+  sleeve end where the paper does. See `sleeve` in the page metadata and
+  `--debug`'s `sleeve.jpg`.
 - Glare can only be removed where at least one shot sees that spot without it,
   so for oversized pages each region needs two shots from different angles.
 - Tested on synthetic photos and on real sleeved album pages, kept in the

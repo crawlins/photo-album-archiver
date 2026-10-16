@@ -16,8 +16,9 @@ from .page import PageQuad, detect_pages, estimate_aspect, focal_px_from_35mm
 from .regions import QualityParams, attach_shot_boxes, glare_regions, page_warnings, shadow_regions, shot_outline, single_coverage_regions, uncovered_regions
 from .shadow import grow, single_shadow
 from .register import register
+from .sleeve import SleeveFit, SleeveParams, debug_image as sleeve_debug_image, find_sleeve
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 PREVIEW_MAX_SIDE = 3000
 MAP_STEP = 8  # flattening maps of curved pages are computed every this many output px
@@ -37,6 +38,7 @@ class PageOptions:
     glare: GlareParams = field(default_factory=GlareParams)
     quality: QualityParams = field(default_factory=QualityParams)
     curvature: CurvatureParams = field(default_factory=CurvatureParams)
+    sleeve: SleeveParams = field(default_factory=SleeveParams)
 
 
 @dataclass
@@ -62,6 +64,7 @@ class PageReport:
     warnings: list[dict] = field(default_factory=list)
     detector: dict = field(default_factory=dict)  # glare, shadow and quality parameters, bias used
     curvature: dict = field(default_factory=dict)  # see _curvature_report
+    sleeve: dict = field(default_factory=dict)  # see SleeveFit.report
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -77,6 +80,8 @@ class PageResult:
     single_coverage: np.ndarray | None = None  # bool, full resolution: pixel covered by exactly one shot
     surface: PageSurface | None = None  # the bent page model, when the page was treated as curved
     residual_shadow: np.ndarray | None = None  # float32 0..1 on the detector's grid
+    sleeve: SleeveFit | None = None  # the sleeve and the paper found in the preview mosaic
+    mosaic_from_shot: dict[int, np.ndarray] = field(default_factory=dict)  # per used shot, its homography into the preview mosaic
 
 
 def _warp_all(images, homographies, size):
@@ -189,7 +194,13 @@ def process_page(images: list[np.ndarray], options: PageOptions | None = None, d
             score = c.score * (cv2.contourArea(mapped) / covered) / own if own > 0 else 0.0
             pool.append((PageQuad(mapped, c.method, score), _touch(c.corners, frame)))
     quad = _choose_page(pool, [images[i].shape[:2] for i in used], pre_H)
-    corners_ref = cv2.perspectiveTransform(quad.corners.reshape(-1, 1, 2), np.linalg.inv(to_canvas)).reshape(4, 2)
+    # Inside an album sleeve, the paper's own outline rather than whichever
+    # of the sleeve's edges the page detection landed on.
+    sp = opt.sleeve
+    sp.validate()
+    sleeve = find_sleeve(preview.image, preview.coverage, quad.corners, sp)
+    page_q = sleeve.corners.astype(np.float32) if sleeve.sleeved else quad.corners
+    corners_ref = cv2.perspectiveTransform(page_q.reshape(-1, 1, 2), np.linalg.inv(to_canvas)).reshape(4, 2)
 
     # 2. Output rectangle: true aspect ratio, native resolution, capped.
     rh, rw = images[ref].shape[:2]
@@ -201,8 +212,20 @@ def process_page(images: list[np.ndarray], options: PageOptions | None = None, d
     if cp.mode != "off":
         f_px = focal or focal_px_from_35mm(26.0, rw, rh)
         K = np.array([[f_px, 0, rw / 2], [0, f_px, rh / 2], [0, 0, 1]])
-        fit = fit_page(preview.image, preview.coverage, quad.corners, to_canvas, K, aspect, cp, _neighbour_side(pool, quad))
+        fit = fit_page(
+            preview.image,
+            preview.coverage,
+            page_q,
+            to_canvas,
+            K,
+            aspect,
+            cp,
+            _neighbour_side(pool, quad),
+            outline=sleeve.outline if sleeve.sleeved else None,
+            binding_hint=sleeve.strip_side,
+        )
     surface = fit.surface if fit is not None else None
+    crop_out = _sleeve_crop(sleeve, sp)  # (left, top, right, bottom), fractions of the page width
     alignments: list[ShotAlignment] = []
     if surface is None:
         tl, tr, br, bl = corners_ref
@@ -212,10 +235,27 @@ def process_page(images: list[np.ndarray], options: PageOptions | None = None, d
             W, H = long_px, long_px / aspect
         else:
             W, H = long_px * aspect, long_px
-        W, H = int(round(W)), int(round(H))
-        dx, dy = opt.inset * W, opt.inset * H
-        rect = np.float32([[-dx, -dy], [W - 1 + dx, -dy], [W - 1 + dx, H - 1 + dy], [-dx, H - 1 + dy]])
-        P = cv2.getPerspectiveTransform(corners_ref.astype(np.float32), rect)
+        if any(crop_out):
+            # The paper's rectangle at its own resolution, inside the larger
+            # sleeve rectangle, the whole capped as before.
+            gl, gt, gr, gb = crop_out
+            Wt, Ht = W * (1 + gl + gr), H + W * (gt + gb)
+            k = min(1.0, opt.max_side / max(Wt, Ht))
+            W, H = int(round(Wt * k)), int(round(Ht * k))
+            dx, dy = opt.inset * W, opt.inset * H
+            sx, sy = (W - 1 + 2 * dx) / (1 + gl + gr), (H - 1 + 2 * dy) / (1 / aspect + gt + gb)
+            x0, y0 = -dx + gl * sx, -dy + gt * sy
+            x1, y1 = x0 + sx, y0 + sy / aspect
+            paper_rect = np.float32([[x0, y0], [x1, y0], [x1, y1], [x0, y1]])
+            P = cv2.getPerspectiveTransform(corners_ref.astype(np.float32), paper_rect)
+            rect = np.float32([[-dx, -dy], [W - 1 + dx, -dy], [W - 1 + dx, H - 1 + dy], [-dx, H - 1 + dy]])
+            corners_ref = cv2.perspectiveTransform(rect.reshape(-1, 1, 2), np.linalg.inv(P)).reshape(4, 2)
+            aspect = (1 + gl + gr) / (1 / aspect + gt + gb)
+        else:
+            W, H = int(round(W)), int(round(H))
+            dx, dy = opt.inset * W, opt.inset * H
+            rect = np.float32([[-dx, -dy], [W - 1 + dx, -dy], [W - 1 + dx, H - 1 + dy], [-dx, H - 1 + dy]])
+            P = cv2.getPerspectiveTransform(corners_ref.astype(np.float32), rect)
 
         # 3. Warp every full-res photo straight into the page rectangle (one
         #    resampling step), then fuse there.
@@ -229,8 +269,16 @@ def process_page(images: list[np.ndarray], options: PageOptions | None = None, d
         aspect_planar = aspect
         aspect = surface.aspect
         W, H = output_size(surface, opt.max_side)
+        gl, gt, gr, gb = crop_out
+        # The sleeve crop, in page fractions; the surface runs on past the page.
+        extend = (gl, gt * surface.aspect, gr, gb * surface.aspect)
+        if any(crop_out):
+            Wt, Ht = W * (1 + gl + gr), H + W * (gt + gb)
+            k = min(1.0, opt.max_side / max(Wt, Ht))
+            W, H = max(2, int(round(Wt * k))), max(2, int(round(Ht * k)))
+            aspect = (1 + gl + gr) / (surface.height + gt + gb)
         shot_H = [reg.homographies[i] for i in used]
-        maps = flatten_maps(surface, (W, H), opt.inset, shot_H, MAP_STEP)
+        maps = flatten_maps(surface, (W, H), opt.inset, shot_H, MAP_STEP, extend)
         f_small = min(1.0, WEIGHT_MAX_SIDE / max(W, H))
         small, small_m = _remap_all([images[i] for i in used], maps, (W, H), MAP_STEP, f_small)
         order = [used.index(i) for i in reg.tree_order if i in used]
@@ -238,7 +286,8 @@ def process_page(images: list[np.ndarray], options: PageOptions | None = None, d
         maps = [m if a.field is None else apply_field(m, a.field, MAP_STEP, (W, H)) for m, a in zip(maps, alignments)]
         out_w, out_m = _remap_all([images[i] for i in used], maps, (W, H), MAP_STEP)
         result = fuse(out_w, out_m, preview.tone_reference, opt.fuse)
-        corners_ref = surface.project(np.array([0, 1, 1, 0.0]), np.array([0, 0, 1, 1.0])).astype(np.float32)
+        el, et, er, eb = extend
+        corners_ref = surface.project(np.array([-el, 1 + er, 1 + er, -el]), np.array([-et, -et, 1 + eb, 1 + eb])).astype(np.float32)
         mappers = [_map_mapper(m, MAP_STEP) for m in maps]
 
     single_full = np.sum([m.astype(np.uint8) for m in out_m], axis=0) == 1
@@ -270,13 +319,50 @@ def process_page(images: list[np.ndarray], options: PageOptions | None = None, d
         steep = _steep(surface, [reg.homographies[i] for i in used], [images[i].shape[:2] for i in used], cp)
     report.curvature = _curvature_report(cp, fit, surface, aspect_planar if surface is not None else aspect, used, alignments, steep)
     report.warnings += _curvature_warnings(cp, fit, steep)
+    report.sleeve = sleeve.report()
+    report.warnings += _sleeve_warnings(sleeve)
 
     if debug_dir is not None:
         _write_debug(Path(debug_dir), preview, quad, to_canvas, result, used, quality)
         if fit is not None:
             _write_curvature_debug(Path(debug_dir), preview.image, to_canvas, fit, images[ref], used, alignments, (W, H), opt.inset)
+        if sp.mode != "off":
+            cv2.imwrite(str(Path(debug_dir) / "sleeve.jpg"), sleeve_debug_image(preview.image, sleeve))
 
-    return PageResult(result.image, report, corners_ref, quality.residual, result.coverage, single_full, surface, quality.residual_shadow)
+    return PageResult(
+        result.image,
+        report,
+        corners_ref,
+        quality.residual,
+        result.coverage,
+        single_full,
+        surface,
+        quality.residual_shadow,
+        sleeve,
+        {i: H_ for i, H_ in zip(used, pre_H)},
+    )
+
+
+def _sleeve_crop(fit: SleeveFit, p: SleeveParams) -> tuple[float, float, float, float]:
+    """How far the composed page reaches past the paper on each side (left, top, right, bottom), fractions of its width.
+
+    Nothing for the paper crop or a page not in a sleeve.
+    """
+    if not fit.sleeved or p.crop != "sleeve":
+        return (0.0, 0.0, 0.0, 0.0)
+    m = fit.margins
+    return (m.get("left", 0.0), m.get("top", 0.0), m.get("right", 0.0), m.get("bottom", 0.0))
+
+
+def _sleeve_warnings(fit: SleeveFit) -> list[dict]:
+    return [
+        {
+            "code": "paper_edge_uncertain",
+            "side": side,
+            "message": f"The paper's {side} edge could not be told apart from the sleeve, so the crop there follows the outermost edge found and may include some sleeve.",
+        }
+        for side in fit.missing
+    ]
 
 
 def _homography_mapper(H_page_to_shot: np.ndarray):

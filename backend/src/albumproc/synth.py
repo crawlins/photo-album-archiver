@@ -14,6 +14,12 @@ Glare comes in two styles: ``spot`` (soft, flat-topped reflections of a lamp)
 and ``sleeve`` (long, thin, wavy streaks with a clipped core inside a soft
 veil, as a crinkled plastic sleeve reflects a ceiling light).
 
+Sleeves (``sleeve=``) put the page in a clear plastic album sleeve: crimped
+seams on the two sides across the binding, a gap of clear plastic inside
+them, an opaque binding strip on the binding side and a clear margin on the
+far side, the paper shifted and turned slightly inside it. The paper's and
+the sleeve's corners and the bands on each side are kept as ground truth.
+
 Shadows (``shadow=``) are the soft silhouette of an arm, a hand or a phone
 held between the light and the page, entering from a page edge. They lie on
 the page, so a shadow in several shots falls on the same part of it. They
@@ -23,7 +29,7 @@ page, shots and glare as the same case without one.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import cv2
 import numpy as np
@@ -35,6 +41,7 @@ class SynthShot:
     H_scene_to_image: np.ndarray
     glare_mask: np.ndarray  # bool, where glare was added
     shadow_mask: np.ndarray | None = None  # bool, where a shadow is at least half its depth; None without one
+    camera: tuple | None = None  # (K, R, C) of the shot, see _look_at_camera
 
 
 SHADOWS = ("none", "one", "all", "part")
@@ -55,15 +62,54 @@ class Shadow:
 
 
 @dataclass
+class SleeveSpec:
+    """An album sleeve around the page. Fractions are of the paper's width; None draws a value."""
+
+    binding: str = "left"  # the strip's side; the crimps run along the two sides across it
+    crimp: float = 0.015  # crimped seam's width
+    period: float = 0.0055  # its ridges' spacing along the seam
+    gap: float | None = None  # clear plastic between a crimp and the paper, 0 to 1%
+    strip: float = 0.025  # opaque binding strip's width
+    clear: float | None = None  # clear margin on the far side, 0 to 5.5%
+    radius: float | None = None  # rounded outer corners: 0 or 2%
+    shift: float | None = None  # the paper's shift inside the sleeve, up to 0.5% each way
+    turn: float | None = None  # and its turn, degrees, up to 0.5
+    print_inset: float | None = None  # the prints' borders this far inside the paper's edge, 1 to 3%
+
+
+@dataclass
+class SleeveTruth:
+    """Where the paper and the sleeve are, in the sleeve's own pixels (the drawn canvas)."""
+
+    spec: SleeveSpec  # with every value drawn
+    paper_corners: np.ndarray  # (4, 2) TL TR BR BL
+    sleeve_corners: np.ndarray  # (4, 2): the sleeve's outer rectangle
+    bands: dict[str, list[str]]  # per side of the page, the sleeve's bands from the outside in
+    project: object = None  # project(k, pts) -> shot k's pixels, for canvas pixels pts (n, 2)
+
+
+@dataclass
 class SynthPage:
     page: np.ndarray  # ground-truth page, BGR
     scene: np.ndarray  # page on the table
     page_origin: tuple[int, int]  # page's top-left inside the scene
     shots: list[SynthShot]
+    sleeve: SleeveTruth | None = None
 
     @property
     def images(self) -> list[np.ndarray]:
         return [s.image for s in self.shots]
+
+    def outline_in(self, k: int, which: str = "paper", n: int = 60) -> list[np.ndarray]:
+        """The paper's (or the sleeve's) sides, top, right, bottom, left, as points in shot ``k``'s pixels."""
+        sl = self.sleeve
+        q = sl.paper_corners if which == "paper" else sl.sleeve_corners
+        t = np.linspace(0, 1, n)[:, None]
+        return [sl.project(k, q[i] + t * (q[(i + 1) % 4] - q[i])) for i in range(4)]
+
+    def corners_in(self, k: int, which: str = "paper") -> np.ndarray:
+        sl = self.sleeve
+        return sl.project(k, sl.paper_corners if which == "paper" else sl.sleeve_corners)
 
 
 def _print_photo(rng: np.random.Generator, w: int, h: int) -> np.ndarray:
@@ -414,7 +460,7 @@ def make_shots(
         img = cv2.GaussianBlur(img, (0, 0), 0.6)
         ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 90])
         img = cv2.imdecode(buf, cv2.IMREAD_COLOR)
-        shots.append(SynthShot(img, H, gmask, smask))
+        shots.append(SynthShot(img, H, gmask, smask, (K, R, C)))
     return shots
 
 
@@ -501,6 +547,16 @@ def _curved_renderer(page: np.ndarray, table: np.ndarray, origin: tuple[int, int
         return {"left": (a, b), "right": (pw - a, b), "top": (b, a), "bottom": (b, ph - a)}[binding]
 
     along = ph if binding in ("left", "right") else pw
+    u_all, foot_all, height_all = _bend(across, lift, strip)
+
+    def locate(K, R, C, pts):
+        """Image pixels of page pixels ``pts`` (n, 2), on the bent page."""
+        x, y = np.asarray(pts, np.float64).T
+        a, b = {"left": (x, y), "right": (pw - x, y), "top": (y, x), "bottom": (ph - y, x)}[binding]
+        X = np.stack([scene_xyz(f, bb, z) for f, bb, z in zip(np.interp(a, u_all, foot_all), b, np.interp(a, u_all, height_all))])
+        c = (X - C) @ R.T
+        q = c @ K.T
+        return q[:, :2] / q[:, 2:3]
 
     def render(K, R, C, img_size, interp):
         w, h = img_size
@@ -539,7 +595,109 @@ def _curved_renderer(page: np.ndarray, table: np.ndarray, origin: tuple[int, int
         poly = np.array([project(X)[0] for X in corners], np.float32)
         return img, poly
 
+    render.locate = locate
     return render
+
+
+def _resolve_sleeve(rng: np.random.Generator, spec: SleeveSpec) -> SleeveSpec:
+    """``spec`` with every unset value drawn from ``rng``."""
+    if spec.binding not in BINDINGS:
+        raise ValueError(spec.binding)
+    return SleeveSpec(
+        binding=spec.binding,
+        crimp=spec.crimp,
+        period=spec.period,
+        gap=float(rng.uniform(0.0, 0.01)) if spec.gap is None else spec.gap,
+        strip=spec.strip,
+        clear=float(rng.uniform(0.0, 0.055)) if spec.clear is None else spec.clear,
+        radius=float(rng.choice([0.0, 0.02])) if spec.radius is None else spec.radius,
+        shift=float(rng.uniform(0.0, 0.005)) if spec.shift is None else spec.shift,
+        turn=float(rng.uniform(-0.5, 0.5)) if spec.turn is None else spec.turn,
+        print_inset=float(rng.uniform(0.01, 0.03)) if spec.print_inset is None else spec.print_inset,
+    )
+
+
+def _sleeve_layout(spec: SleeveSpec, pw: int, ph: int, rng: np.random.Generator):
+    """Band widths per side (px) and the canvas size for a resolved sleeve around a ``pw`` x ``ph`` paper.
+
+    Returns ({side: (kind of outermost band, band widths outside the paper's bounding box)}, (cw, ch), paper affine (2, 3)).
+    """
+    W = float(pw)
+    across = ("top", "bottom") if spec.binding in ("left", "right") else ("left", "right")
+    free = {"left": "right", "right": "left", "top": "bottom", "bottom": "top"}[spec.binding]
+    widths = {}
+    for side in ("top", "right", "bottom", "left"):
+        if side in across:
+            widths[side] = [("crimp", spec.crimp * W), ("clear", (spec.gap + rng.uniform(0, spec.shift)) * W)]
+        elif side == spec.binding:
+            widths[side] = [("strip", spec.strip * W)]
+        else:
+            widths[side] = [("clear", (spec.clear + rng.uniform(0, spec.shift)) * W)]
+    th = np.radians(spec.turn)
+    bw = pw * abs(np.cos(th)) + ph * abs(np.sin(th))
+    bh = pw * abs(np.sin(th)) + ph * abs(np.cos(th))
+    total = {k: sum(w for _, w in v) for k, v in widths.items()}
+    cw = int(round(total["left"] + bw + total["right"]))
+    ch = int(round(total["top"] + bh + total["bottom"]))
+    # Paper turned about its centre, its bounding box placed inside the bands.
+    cx, cy = total["left"] + bw / 2, total["top"] + bh / 2
+    c, sn = np.cos(th), np.sin(th)
+    A = np.array([[c, -sn, cx - (c * pw / 2 - sn * ph / 2)], [sn, c, cy - (sn * pw / 2 + c * ph / 2)]])
+    return widths, (cw, ch), A, free
+
+
+def make_sleeve(rng: np.random.Generator, paper: np.ndarray, spec: SleeveSpec, backdrop) -> tuple[np.ndarray, SleeveTruth]:
+    """The paper in its sleeve, drawn on a canvas the size of the sleeve.
+
+    ``backdrop(cw, ch)`` gives what lies under the sleeve (BGR uint8), seen
+    through its clear plastic with a 10% to 20% white haze, and outside its
+    rounded corners as it is. ``spec`` is resolved (see ``_resolve_sleeve``).
+    """
+    ph, pw = paper.shape[:2]
+    W = float(pw)
+    widths, (cw, ch), A, free = _sleeve_layout(spec, pw, ph, rng)
+    back = backdrop(cw, ch).astype(np.float32)
+    haze = float(rng.uniform(0.1, 0.2))
+    canvas = back * (1 - haze) + 255 * haze
+    # The paper, turned, over the clear plastic.
+    warped = cv2.warpAffine(paper, A, (cw, ch), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
+    mask = cv2.warpAffine(np.full((ph, pw), 255, np.uint8), A, (cw, ch), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT).astype(np.float32)[..., None] / 255
+    canvas = canvas * (1 - mask) + warped.astype(np.float32) * mask
+    yy, xx = np.mgrid[0:ch, 0:cw].astype(np.float32)
+    dist = {"top": yy, "bottom": ch - 1 - yy, "left": xx, "right": cw - 1 - xx}
+    along = {"top": xx, "bottom": xx, "left": yy, "right": yy}
+    # Crimped seams: grey, ridged across, with a bright line along their middle.
+    for side, bands in widths.items():
+        kind, w = bands[0]
+        d = dist[side]
+        if kind == "crimp":
+            inside = d < w
+            ridge = 0.5 + 0.5 * np.sin(2 * np.pi * along[side] / (spec.period * W))
+            shade = 145 + 55 * ridge + 15 * np.exp(-(((d - 0.5 * w) / (0.25 * w)) ** 2))
+            canvas[inside] = shade[inside][:, None] * np.array([1.0, 1.0, 0.98], np.float32)
+        elif kind == "strip":
+            inside = d < w
+            canvas[inside] = np.array([188, 222, 240], np.float32) + 0 * canvas[inside]  # opaque warm cream, BGR
+    # Rounded outer corners: beyond them is what lies under the sleeve.
+    r = spec.radius * W
+    if r > 0:
+        for cx, cy in ((r, r), (cw - 1 - r, r), (cw - 1 - r, ch - 1 - r), (r, ch - 1 - r)):
+            corner = ((xx - cx) * np.sign(cx - cw / 2) > 0) & ((yy - cy) * np.sign(cy - ch / 2) > 0) & (np.hypot(xx - cx, yy - cy) > r)
+            canvas[corner] = back[corner]
+    canvas = cv2.GaussianBlur(np.clip(canvas, 0, 255), (0, 0), 0.7)
+    paper_corners = (np.float64([[0, 0, 1], [pw, 0, 1], [pw, ph, 1], [0, ph, 1]]) @ A.T).astype(np.float64)
+    sleeve_corners = np.float64([[0, 0], [cw, 0], [cw, ch], [0, ch]])
+    # The bands as seen: the seam or strip, then whatever clear plastic is
+    # left between it and the (turned) paper, if it is wide enough to see.
+    edge_dist = {"top": paper_corners[:, 1], "bottom": ch - paper_corners[:, 1], "left": paper_corners[:, 0], "right": cw - paper_corners[:, 0]}
+    side_corners = {"top": (0, 1), "right": (1, 2), "bottom": (2, 3), "left": (3, 0)}
+    bands = {}
+    for side, bs in widths.items():
+        kind, w = bs[0]
+        seam = w if kind in ("crimp", "strip") else 0.0
+        gap = float(np.mean(edge_dist[side][list(side_corners[side])])) - seam
+        bands[side] = ([kind] if seam else []) + (["clear"] if gap >= 0.004 * W else [])
+    return canvas.astype(np.uint8), SleeveTruth(spec, paper_corners, sleeve_corners, bands)
 
 
 def make_case(
@@ -555,6 +713,7 @@ def make_case(
     binding: str = "left",
     shadow: str = "none",
     glare: bool = True,
+    sleeve: SleeveSpec | None = None,
 ) -> SynthPage:
     """Build a test case.
 
@@ -583,21 +742,34 @@ def make_case(
     first shot has a shadow reaching in from a part of the page only it
     covers; meant for ``stitch``). ``glare=False`` leaves the glare out of
     ``glare`` and ``stitch`` shots.
+    ``sleeve`` puts the page in an album sleeve (``glare``, ``stitch`` and
+    the curved kinds; see ``make_sleeve``), its unset values drawn from a
+    stream of their own. The prints then lie ``print_inset`` inside the
+    paper's edges, and on a curved page the strip is on the bent side.
     """
     if shadow not in SHADOWS:
         raise ValueError(shadow)
+    if sleeve is not None and kind not in ("glare", "stitch", "curved", "curved_stitch"):
+        raise ValueError(f"no sleeve for {kind} pages")
     rng = np.random.default_rng(seed)
     srng = np.random.default_rng([seed, 7])  # shadows have their own stream, so the rest of the case is unchanged
+    lrng = np.random.default_rng([seed, 11])  # and so do sleeves
+    spec = None
+    if sleeve is not None:
+        if kind in ("curved", "curved_stitch"):
+            sleeve = replace(sleeve, binding=binding)
+        spec = _resolve_sleeve(lrng, sleeve)
     if kind in ("curved", "curved_stitch"):
-        return _curved_case(rng, kind, n, glare_style, lift, strip, binding, shadow, srng)
+        return _curved_case(rng, kind, n, glare_style, lift, strip, binding, shadow, srng, spec, lrng)
+    inset = spec.print_inset if spec is not None else None
     if kind == "stitch" and n >= 4:
-        page = make_page(rng, 3200, 2200)
+        page = make_page(rng, 3200, 2200, margin=inset)
     elif kind == "stitch":
-        page = make_page(rng, 4000, 2000)  # wide, like a two-page spread
+        page = make_page(rng, 4000, 2000, margin=inset)  # wide, like a two-page spread
     elif kind == "clean_white":
         page = make_clean_white_page(rng)
     else:
-        page = make_page(rng)
+        page = make_page(rng, margin=inset)
     ph, pw = page.shape[:2]
     margin = int(0.6 * max(pw, ph))
     if kind == "pair":
@@ -632,9 +804,25 @@ def make_case(
             # A wide shot of the whole row, aimed at its middle.
             shots += make_shots(rng, scene, rect, wide_targets, fill=0.36 if len(row) == 2 else 0.25, glare_style=glare_style, shadow=plan[len(targets) :])
         return SynthPage(page, scene, (x_page, margin), shots)
-    scene = make_table(rng, pw + 2 * margin, ph + 2 * margin)
-    scene[margin : margin + ph, margin : margin + pw] = page
-    rect = (margin, margin, pw, ph)
+    truth = None
+    if spec is not None:
+        held = {}
+
+        def backdrop(cw, ch):
+            m = int(0.6 * max(cw, ch))
+            held["table"], held["m"] = make_table(rng, cw + 2 * m, ch + 2 * m), m
+            return held["table"][m : m + ch, m : m + cw]
+
+        canvas, truth = make_sleeve(lrng, page, spec, backdrop)
+        margin = held["m"]
+        scene = held["table"]
+        ch, cw = canvas.shape[:2]
+        scene[margin : margin + ch, margin : margin + cw] = canvas
+        rect = (margin, margin, cw, ch)
+    else:
+        scene = make_table(rng, pw + 2 * margin, ph + 2 * margin)
+        scene[margin : margin + ph, margin : margin + pw] = page
+        rect = (margin, margin, pw, ph)
     if kind == "glare":
         targets = [(0.5 + rng.uniform(-0.04, 0.04), 0.5 + rng.uniform(-0.04, 0.04)) for _ in range(n)]
         shots = make_shots(rng, scene, rect, targets, fill=0.72, glare=glare, glare_style=glare_style, shadow=shadow, shadow_rng=srng)
@@ -652,28 +840,52 @@ def make_case(
         shots = make_shots(rng, scene, rect, targets, fill=fill, glare=glare, glare_style=glare_style, shadow=shadow, shadow_rng=srng)
     else:
         raise ValueError(kind)
-    return SynthPage(page, scene, (margin, margin), shots)
+    if truth is None:
+        return SynthPage(page, scene, (margin, margin), shots)
+    m = margin
+
+    def project(k, pts):
+        return cv2.perspectiveTransform(np.asarray(pts, np.float64).reshape(-1, 1, 2) + m, shots[k].H_scene_to_image).reshape(-1, 2)
+
+    truth.project = project
+    ox, oy = np.round(truth.paper_corners[0]).astype(int) + m
+    return SynthPage(page, scene, (int(ox), int(oy)), shots, truth)
 
 
-def _curved_case(rng, kind: str, n: int, glare_style: str, lift: float, strip: float, binding: str, shadow: str = "none", srng=None) -> SynthPage:
+def _curved_case(rng, kind: str, n: int, glare_style: str, lift: float, strip: float, binding: str, shadow: str = "none", srng=None, spec: SleeveSpec | None = None, lrng=None) -> SynthPage:
     if binding not in BINDINGS:
         raise ValueError(binding)
     stitch = kind == "curved_stitch"
     # Narrow margins, so that prints reach well into the bent strip, where
     # the bend shows in them.
     if stitch and binding in ("left", "right"):
-        page = make_page(rng, 4000, 2000, margin=0.015)  # wide: halves side by side
+        page = make_page(rng, 4000, 2000, margin=0.015 if spec is None else spec.print_inset)  # wide: halves side by side
     elif stitch:
-        page = make_page(rng, 2200, 3000, margin=0.015)  # tall: halves above and below each other
+        page = make_page(rng, 2200, 3000, margin=0.015 if spec is None else spec.print_inset)  # tall: halves above and below each other
     else:
-        page = make_page(rng, margin=0.02)
+        page = make_page(rng, margin=0.02 if spec is None else spec.print_inset)
     ph, pw = page.shape[:2]
-    margin = int(0.6 * max(pw, ph))
-    table = make_table(rng, pw + 2 * margin, ph + 2 * margin)
+    truth = None
+    if spec is not None:
+        # The sleeve is drawn around the paper, and the two bend together.
+        held = {}
+
+        def backdrop(cw, ch):
+            m = int(0.6 * max(cw, ch))
+            held["table"], held["m"] = make_table(rng, cw + 2 * m, ch + 2 * m), m
+            return held["table"][m : m + ch, m : m + cw]
+
+        drawn, truth = make_sleeve(lrng, page, spec, backdrop)
+        margin, table = held["m"], held["table"]
+        ph, pw = drawn.shape[:2]
+    else:
+        drawn = page
+        margin = int(0.6 * max(pw, ph))
+        table = make_table(rng, pw + 2 * margin, ph + 2 * margin)
     scene = table.copy()
-    scene[margin : margin + ph, margin : margin + pw] = page
+    scene[margin : margin + ph, margin : margin + pw] = drawn
     rect = (margin, margin, pw, ph)
-    render = _curved_renderer(page, table, (margin, margin), binding, lift, strip)
+    render = _curved_renderer(drawn, table, (margin, margin), binding, lift, strip)
     if stitch and binding in ("left", "right"):
         targets, fill = [(0.3, 0.5), (0.7, 0.5)], 1.2
     elif stitch:
@@ -682,4 +894,8 @@ def _curved_case(rng, kind: str, n: int, glare_style: str, lift: float, strip: f
         targets, fill = [(0.5, 0.5)] * max(1, n), 0.72
     targets = [(x + rng.uniform(-0.03, 0.03), y + rng.uniform(-0.03, 0.03)) for x, y in targets]
     shots = make_shots(rng, scene, rect, targets, fill=fill, glare_style=glare_style, render=render, shadow=shadow, shadow_rng=srng)
-    return SynthPage(page, scene, (margin, margin), shots)
+    if truth is None:
+        return SynthPage(page, scene, (margin, margin), shots)
+    truth.project = lambda k, pts: render.locate(*shots[k].camera, pts)
+    ox, oy = np.round(truth.paper_corners[0]).astype(int) + margin
+    return SynthPage(page, scene, (int(ox), int(oy)), shots, truth)
