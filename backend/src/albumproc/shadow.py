@@ -19,10 +19,10 @@ where it is darker by at least the minimum depth and
   under a shadow) rather than spread the way added white light spreads them;
 - on pale content with texture, the fit ``R = a*I + b`` has ``b ~ 0``
   (scaled) rather than ``b > 0`` (light added);
-- on flat pale content, colour and texture cannot tell, and two shots alone
-  cannot say which of them is off. With three or more the median is
-  trusted, unless the soft edge of the difference lies in the other shots
-  (glare in most of them) rather than in this one.
+- on flat pale content, colour and texture cannot tell. With three or more
+  shots the median is trusted, unless the soft edge of the difference lies
+  in the other shots (glare in most of them) rather than in this one. With
+  two, the edge alone decides, and only where it plainly lies in this shot.
 
 That is the comparison cue (``comparison_shadow``). It also stays out of
 dark content, where small errors of the tone match are large ratios.
@@ -71,6 +71,23 @@ class ShadowParams:
     # texture fit to count; below it noise, not content, sets the slope.
     min_correlation: float = 0.6
     own_min: float = 0.3  # least share of a pale difference's soft edge lying in the shot itself (three or more shots)
+    # The same with two shots, where no third says which of them is off: a
+    # shadow's edge lies wholly in its shot (scores of 0.98 and more on the
+    # synthetic pages), while sleeve glare in the other shot scored up to
+    # 0.42 (tools/fit_shadow.py).
+    own_min_two: float = 0.85
+    own_local_min: float = 0.5  # with two shots, least share for the nearest stretch of edge too
+    # With two shots, least depth of the area the edge test judges. At 0.12
+    # a slight darkening of a portrait's backdrop on the real page page-two
+    # was taken for a shadow once the tone was refitted.
+    two_min_depth: float = 0.18
+    # With two shots, how far (fraction of the long side) a shadow is kept
+    # from an edge lying in the other shot: glare's soft tail. It covers the
+    # glare veto's reach and fusion's halo around a shadow.
+    two_edge_reach: float = 0.05
+    # With two shots, how much brighter than this shot's own page just
+    # outside the area the other shot may be: more is glare in it.
+    two_level_tol: float = 0.25
     dark_level: float = 0.08  # luminance (linear) of the shot below which no shadow is called
     glare_reach: float = 0.03  # the glare veto reaches this far beyond plain glare, fraction of the long side
     seed: float = 0.7  # hysteresis thresholds on the cue, as for glare
@@ -88,8 +105,22 @@ class ShadowParams:
     edge_run: float = 0.6  # dips along this share of a page edge, deepest at it, are spine shading
     single_weight: float = 0.5  # single-image cue scale
     dip_min: float = 0.03  # least dip of the rebuilt log illumination below its envelope that is looked at
-    edge_cover: float = 0.3  # share of a dip's rim with an accepted edge for a full cue
-    grow_edge_cover: float = 0.15  # the same where the cue only grows a shadow comparison found
+    # Share of a dip's rim with an accepted edge for a full cue. 0.12 finds
+    # 23 of 30 single-shot shadows of depth 0.35 or more on the synthetic
+    # pages (0.3 found 1) now that edges near glare are left out of the
+    # rebuild (``glare_edge_reach``); in overlaps the report counts the cue
+    # only where every covering shot shows it.
+    edge_cover: float = 0.12
+    # The same for a shot that alone covers part of the page, where the
+    # report follows its cue without a second shot to agree. 0.12 there
+    # warned on the real page page-two, over the darker backdrop of a
+    # portrait; 0.15 does not.
+    grow_edge_cover: float = 0.15
+    # Edges with glare this near (fraction of the long side) on their bright
+    # side are left out of the rebuilt illumination: the page around a glare
+    # spot is no darker than elsewhere, but rebuilt with the spot's edges it
+    # looks like a dip.
+    glare_edge_reach: float = 0.03
 
 
 @dataclass
@@ -128,25 +159,31 @@ def _reference(lin: list[np.ndarray], masks: list[np.ndarray], extra: list[np.nd
 
     The median includes the shot itself: with three or more covering it is
     still one of the clean values when one shot is shadowed or glared, and
-    it is computed once for all shots. ``extra`` (one map per shot) is
-    combined the same way. Returns, per shot, the reference image, the
+    it is computed once for all shots. Of an even count's two middle values
+    it takes the darker, not their mean: glare only adds light, so with two
+    of four shots glared the mean is half glare and a clean shot looks
+    shadowed against it, while a shadowed shot is still found against the
+    darker of two clean ones. ``extra`` (one map, or a stack of maps, per
+    shot) is combined as before. Returns, per shot, the reference image, the
     reference ``extra`` and the count of other covering shots.
     """
     n = len(lin)
     count = np.sum([m.astype(np.int32) for m in masks], axis=0)
 
-    def median(stack: list[np.ndarray]) -> np.ndarray:
+    def median(stack: list[np.ndarray], lower: bool = False) -> np.ndarray:
         a = np.stack([np.where(m[(...,) + (None,) * (s.ndim - 2)], s, np.nan) for s, m in zip(stack, masks)]).astype(np.float32)
         a.sort(axis=0)  # NaNs last
         c = count[(...,) + (None,) * (a.ndim - 3)]
         lo = np.take_along_axis(a, np.maximum((c - 1) // 2, 0)[None], 0)[0]
+        if lower:
+            return np.nan_to_num(lo)
         hi = np.take_along_axis(a, np.maximum(c // 2, 0)[None], 0)[0]
         return np.nan_to_num((lo + hi) / 2)
 
     def total(stack: list[np.ndarray]) -> np.ndarray:
         return np.sum([np.where(m[(...,) + (None,) * (s.ndim - 2)], s, 0) for s, m in zip(stack, masks)], axis=0, dtype=np.float32)
 
-    med = median(lin) if n >= 3 else None
+    med = median(lin, lower=True) if n >= 3 else None
     tot = total(lin)
     med_x = median(extra) if extra is not None and n >= 3 else None
     tot_x = total(extra) if extra is not None else None
@@ -157,20 +194,20 @@ def _reference(lin: list[np.ndarray], masks: list[np.ndarray], extra: list[np.nd
         ref = np.where(one, tot - np.where(masks[i][..., None], lin[i], 0), med if med is not None else 0)
         ref_x = None
         if extra is not None:
-            ref_x = np.where(others == 1, tot_x - np.where(masks[i], extra[i], 0), med_x if med_x is not None else 0)
+            ex = (...,) + (None,) * (extra[i].ndim - 2)
+            ref_x = np.where((others == 1)[ex], tot_x - np.where(masks[i][ex], extra[i], 0), med_x if med_x is not None else 0)
         out.append((ref.astype(np.float32), ref_x, others))
     return out
 
 
-def _owned_by_shot(I: np.ndarray, R: np.ndarray, valid: np.ndarray, pending: np.ndarray, p: ShadowParams) -> np.ndarray:
-    """1 over areas of ``pending`` whose edge lies in shot ``I`` rather than in ``R``, else 0.
+def _edge_ownership(I: np.ndarray, R: np.ndarray, valid: np.ndarray, p: ShadowParams):
+    """Where the soft edges of ``log(I / R)`` are, and how much of each lies in ``I``: (weight, own, sp).
 
     On flat pale content a darker ``I`` is either a shadow in ``I`` or glare
     in ``R``. The edge of the difference tells them apart: a shadow's soft
     edge is in ``I`` while ``R`` is flat there, and glare's edge is in ``R``
-    while ``I`` is flat. Each area of ``pending`` is scored by how much of
-    the change of ``log(I / R)`` around it is carried by ``I``, weighted by
-    the change's strength.
+    while ``I`` is flat. ``own`` (0..1) is the share of the change carried
+    by ``I``; ``weight`` is the change's strength, 0 where it does not count.
     """
     sp = max(1.0, p.penumbra_frac * max(I.shape[:2]) / 2)
     lI0 = cv2.log((I * _LUM).sum(axis=-1) + 0.005)
@@ -196,15 +233,87 @@ def _owned_by_shot(I: np.ndarray, R: np.ndarray, valid: np.ndarray, pending: np.
     flat_one = (np.minimum(np.hypot(gIx, gIy), np.hypot(gRx, gRy)) < 0.3 * np.sqrt(w)) & (np.sqrt(w) >= 0.75 * sharp)
     # Away from the edge of either shot's coverage, where the blur sees the black outside.
     inner = cv2.erode(valid.astype(np.uint8), np.ones((2 * int(np.ceil(3 * sp)) + 1,) * 2, np.uint8)) > 0
-    w = np.where(inner & flat_one, w, 0)
-    n, labels = cv2.connectedComponents(pending.astype(np.uint8), connectivity=8)
+    return np.where(inner & flat_one, w, 0), own, sp
+
+
+def _owned_by_shot(I: np.ndarray, R: np.ndarray, valid: np.ndarray, pending: np.ndarray, p: ShadowParams) -> np.ndarray:
+    """1 over areas of ``pending`` whose edge lies in shot ``I`` rather than in ``R``, else 0.
+
+    Each area of ``pending`` is scored by how much of the change of
+    ``log(I / R)`` around it is carried by ``I`` (``_edge_ownership``),
+    weighted by the change's strength.
+    """
+    w, own, sp = _edge_ownership(I, R, valid, p)
+    return (_area_scores(pending, w, own, sp)[0] >= p.own_min).astype(np.float32)
+
+
+def _area_scores(areas: np.ndarray, w: np.ndarray, own: np.ndarray, sp: float):
+    """Each connected area's share of its surrounding edges lying in the shot: (score per pixel, labels)."""
+    n, labels = cv2.connectedComponents(areas.astype(np.uint8), connectivity=8)
     r = int(np.ceil(4 * sp))
     band = cv2.dilate(labels.astype(np.float32), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))).astype(np.int32)
     num = np.bincount(band.ravel(), (w * own).ravel(), minlength=n)
     den = np.bincount(band.ravel(), w.ravel(), minlength=n)
     score = np.where(den > 0, num / np.maximum(den, 1e-12), 0)
     score[0] = 0
-    return (score[labels] >= p.own_min).astype(np.float32)
+    return score[labels], labels
+
+
+def _nearest(where: np.ndarray, values: np.ndarray) -> np.ndarray:
+    """Each pixel gets ``values`` at the nearest pixel of ``where`` (which must not be empty)."""
+    _, near = cv2.distanceTransformWithLabels((~where).astype(np.uint8), cv2.DIST_L2, 5, labelType=cv2.DIST_LABEL_PIXEL)
+    ys, xs = np.nonzero(where)
+    lut = np.zeros(near.max() + 1, values.dtype)
+    lut[near[ys, xs]] = values[ys, xs]
+    return lut[near]
+
+
+def _owned_by_shot_two(I: np.ndarray, R: np.ndarray, valid: np.ndarray, pending: np.ndarray, core: np.ndarray, p: ShadowParams) -> np.ndarray:
+    """``_owned_by_shot`` where only one other shot covers: stricter, and judged area by area and edge by edge.
+
+    With two shots nothing else says which one is off, so an area counts
+    only where its edges lie almost wholly in ``I`` (``own_min_two``).
+    Areas are scored on their ``core`` (the difference deep enough to seed
+    a shadow), and the shallower rim around it takes the verdict of the
+    nearest core: scored on the rim, a faint wide difference (a sleeve's
+    glare in ``R``) would borrow the verdict of a strong edge somewhere
+    along it. Where a shadow in ``I`` runs into glare in ``R`` both are one
+    area, so each pixel must also have its nearest stretch of edge mostly
+    in ``I`` (``own_local_min``), lie beyond ``two_edge_reach`` of an edge
+    in ``R``, and show ``R`` no brighter than ``I`` is where the two agree
+    nearby (``two_level_tol``): taking ``R`` there must not let glare in.
+    """
+    w, own, sp = _edge_ownership(I, R, valid, p)
+    cores = pending & core
+    if not cores.any():
+        return np.zeros(pending.shape, np.float32)
+    score, _ = _area_scores(cores, w, own, sp)
+    by_area = _nearest(cores, score >= p.own_min_two)
+    sig = 2 * int(np.ceil(4 * sp))
+    num, den = cv2.GaussianBlur(w * own, (0, 0), sig), cv2.GaussianBlur(w, (0, 0), sig)
+    edges = (den > 0) & (den >= 0.05 * float(den[pending].max()))  # where a soft edge is near enough to judge by
+    if not edges.any():
+        return np.zeros(pending.shape, np.float32)
+    local = np.where(edges, num / np.maximum(den, 1e-12), 0).astype(np.float32)
+    by_edge = _nearest(edges, local) >= p.own_local_min
+    # Nor near an edge that lies in ``R``: glare's soft tail there darkens
+    # ``I`` by comparison, and taking ``R`` lets the glare in.
+    theirs = edges & (local < p.own_local_min)
+    if theirs.any():
+        reach = p.two_edge_reach * max(pending.shape)
+        by_edge &= cv2.distanceTransform((~theirs).astype(np.uint8), cv2.DIST_L2, 5) > reach
+    # And no brighter in ``R`` than ``I`` is just outside the area: on flat
+    # content a shadow takes ``I`` below the page's level and ``R`` shows
+    # that level, while glare in ``R`` lifts it above.
+    area = pending & by_area & by_edge
+    if area.any() and p.two_level_tol > 0 and (~area & valid).any():
+        yI = cv2.GaussianBlur((I * _LUM).sum(axis=-1), (0, 0), sp)
+        yR = cv2.GaussianBlur((R * _LUM).sum(axis=-1), (0, 0), sp)
+        ring = (cv2.dilate(pending.astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * sig + 1,) * 2)) > 0) & ~pending & valid
+        ring &= yI >= (1 - p.min_depth / 3) * yR  # where the shots agree: the page's own level
+        if ring.any():
+            area &= yR <= (1 + p.two_level_tol) * _nearest(ring, yI)
+    return area.astype(np.float32)
 
 
 def _window_stats(I: np.ndarray, R: np.ndarray, valid: np.ndarray, k: int):
@@ -245,12 +354,14 @@ def _spread(x: np.ndarray) -> np.ndarray:
 
 
 def _cues(I: np.ndarray, R: np.ndarray, valid: np.ndarray, others: np.ndarray, glare_ref: np.ndarray | None, p: ShadowParams, k: int):
-    """The comparison cue of shot ``I`` against reference ``R`` (both linear BGR): (s_raw, s_grow).
+    """The comparison cue of shot ``I`` against reference ``R`` (both linear BGR): (s_raw, s_grow, veto).
 
     ``others`` counts the other shots covering each pixel; ``glare_ref`` is
-    the reference's own glare score (None skips that check). ``s_grow``
-    starts at a third of the minimum depth, to follow the penumbra out to
-    where the shadow fades. See the module's docstring for the tests.
+    the reference's own glare score, widened by ``glare_reach`` and as is
+    (two channels; None skips that check). ``s_grow`` starts at a third of
+    the minimum depth, to follow the penumbra out to where the shadow
+    fades. ``veto`` is the reference's glare score that holds back fusion
+    (None without ``glare_ref``). See the module's docstring for the tests.
     """
     eps = 1e-6
     mI_c, mR_c, varI, varR, cov = _window_stats(I, R, valid, k)
@@ -274,23 +385,41 @@ def _cues(I: np.ndarray, R: np.ndarray, valid: np.ndarray, others: np.ndarray, g
     # texture's fit where there is texture enough, and in any case no glare
     # near the spot in the reference by its own look.
     fit_pale = np.where(textured, fit_lin, 0.0)
-    # With one other shot there is no telling which of the two is off on
-    # flat pale content, and darker-wins stays. With more, the median of
-    # the others is right unless most of them have glare there; then the
-    # edge of the difference is in them, not in this shot.
-    pending = valid & ~informative & (others >= 2) & (yI >= p.dark_level) & (depth >= p.min_depth / 3)
-    if pending.any():
-        fit_pale = np.maximum(fit_pale, np.where(pending, _owned_by_shot(I, R, valid, pending, p), 0))
-    if glare_ref is not None:
-        fit_pale = np.where(glare_ref >= p.weak, 0, fit_pale)
-    fit = np.where(informative, fit_colour, fit_pale)
     # In dark content a small error of the tone match is a large ratio, and
     # phones brighten shadows of the scene differently from shot to shot.
-    fit = np.where(yI >= p.dark_level, fit, 0)
+    # Judged on this shot, not the reference: a sleeve's reflection over a
+    # dark print in the other shot looks like a deep, colour-true shadow in
+    # this one (real pages page-four and grandma-wilson), so a deep shadow
+    # over mid-tone content is missed too.
+    lit = yI >= p.dark_level
+    # On flat pale content the edge of the difference decides. With three
+    # or more shots the median of the others is right unless most of them
+    # have glare there, and then the edge is in them, not in this shot.
+    # With one other shot only a plain edge in this shot counts.
+    pending = valid & ~informative & lit & (depth >= p.min_depth / 3)
+    owned_two = np.zeros(depth.shape, bool)
+    if (pending & (others >= 2)).any():
+        many = pending & (others >= 2)
+        fit_pale = np.maximum(fit_pale, np.where(many, _owned_by_shot(I, R, valid, many, p), 0))
+    if (pending & (others == 1)).any():
+        two = pending & (others == 1)
+        owned_two = _owned_by_shot_two(I, R, valid, two, depth >= p.two_min_depth, p) > 0
+        fit_pale = np.maximum(fit_pale, owned_two.astype(np.float32))
+    veto = None
+    if glare_ref is not None:
+        # The widened score stands for glare's fading tail, which looks alike
+        # from either shot. Where two shots' edge test has placed the edge in
+        # this shot, the tail is already ruled out, and widening would only
+        # let a print's bright border, which the glare score marks, hide a
+        # shadow next to it.
+        veto = np.where(owned_two, glare_ref[..., 1], glare_ref[..., 0])
+        fit_pale = np.where(veto >= p.weak, 0, fit_pale)
+    fit = np.where(informative, fit_colour, fit_pale)
+    fit = np.where(lit, fit, 0)
 
     s_raw = np.where(valid, _ramp(depth, p.min_depth, p) * fit, 0).astype(np.float32)
     s_grow = np.where(valid, _ramp(depth, p.min_depth / 3, p) * fit, 0).astype(np.float32)
-    return s_raw, s_grow
+    return s_raw, s_grow, veto
 
 
 def grow_regions(seed_cue: np.ndarray, grow_cue: np.ndarray, p: ShadowParams) -> np.ndarray:
@@ -341,24 +470,22 @@ def comparison_shadow(
     # pages, the glare features are not needed.
     refs = _reference(lin, masks)
     first = [_cues(lin[i], ref, masks[i] & (others > 0), others, None, p, k) for i, (ref, _, others) in enumerate(refs)]
-    if not any(grow_regions(s, g, p).any() for s, g in first):
-        return ComparisonShadow([s for s, _ in first], [s for s, _ in first], empty, empty)
+    if not any(grow_regions(s, g, p).any() for s, g, _ in first):
+        return ComparisonShadow([s for s, _, _ in first], [s for s, _, _ in first], empty, empty)
 
     scores = glare() if callable(glare) else glare
     if scores is None:
         cues = first
-        refs_g = [None] * n
     else:
         # Glare fades out softly around its core, and the fading tail, darker
         # than the core, looks alike from either shot: let the veto reach
         # out from where glare is plain.
         r = max(1, int(round(p.glare_reach * max(shape))))
         disk = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
-        refs = _reference(lin, masks, [cv2.dilate(np.asarray(s, np.float32), disk) for s in scores])
-        refs_g = [rg for _, rg, _ in refs]
+        refs = _reference(lin, masks, [np.dstack([cv2.dilate(np.asarray(s, np.float32), disk), np.asarray(s, np.float32)]) for s in scores])
         cues = [_cues(lin[i], ref, masks[i] & (others > 0), others, rg, p, k) for i, (ref, rg, others) in enumerate(refs)]
     cue, cue_raw, shadow, shadow_raw = [], [], [], []
-    for (s_raw, s_grow), rg in zip(cues, refs_g):
+    for s_raw, s_grow, rg in cues:
         veto = 1 - np.clip(rg, 0, 1) if rg is not None else 1
         s, g = (s_raw * veto).astype(np.float32), (s_grow * veto).astype(np.float32)
         cue.append(s)
@@ -454,7 +581,9 @@ def single_shadow(toned: np.ndarray, mask: np.ndarray | None = None, p: ShadowPa
     rim with an accepted edge (full at ``edge_cover``). ``glare`` is
     the shot's glare score (0..1, on the grid), when known: the soft edge of
     a glare veil is not a shadow's, and the page between two veils is not a
-    dip, so edges whose bright side has glare are not taken.
+    dip, so edges with glare within ``glare_edge_reach`` of their bright
+    side are left out of the rebuild, and edges whose bright side has glare
+    are not taken.
     """
     p = p or ShadowParams()
     h, w = toned.shape[:2]
@@ -507,6 +636,12 @@ def single_shadow(toned: np.ndarray, mask: np.ndarray | None = None, p: ShadowPa
 
     inner = cv2.erode(m.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
     ok = soft & achromatic & keeps_texture & inner & (mag > 1e-4)
+    if g is not None and p.glare_edge_reach > 0:
+        r = int(round(p.glare_edge_reach * max(h, w)))
+        g_near = cv2.dilate(g, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1)))
+        yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+        bright = cv2.remap(g_near, xx + 2 * sp * gx / np.maximum(mag, 1e-9), yy + 2 * sp * gy / np.maximum(mag, 1e-9), cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+        ok = ok & (bright < p.weak)
     u = _poisson(np.where(ok, gx, 0), np.where(ok, gy, 0))
     env = _envelope(u, inner)
     dip = np.where(m, env - u, 0)

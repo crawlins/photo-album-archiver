@@ -74,7 +74,7 @@ def _depth(seed: int) -> float:
 
 def _score(args):
     spec, kw = args
-    p = replace(ShadowParams(), **kw)
+    p = replace(ShadowParams(enabled=True), **kw)  # on, whatever the default
     F = _frame(spec)
     r = fuse(F.warped, F.masks, params=FuseParams(shadow=p))
     if spec[4] == "none":

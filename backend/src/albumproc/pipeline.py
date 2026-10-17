@@ -533,9 +533,10 @@ def _assess(result, used: list[int], dropped: list[int], size: tuple[int, int], 
         # Where only this shot covers the page, the single-image cue follows
         # a shadow comparison found out of the overlap. Where shots overlap,
         # a shadow no comparison found is one every covering shot has: the
-        # cue counts there only as far as all of them agree, and with a
-        # stricter rim (``edge_cover``), since a false warning sends the
-        # user back to re-shoot a good page.
+        # cue counts there only as far as all of them agree, since a false
+        # warning sends the user back to re-shoot a good page. Its rim is
+        # ``edge_cover`` there and the stricter ``grow_edge_cover`` in a shot
+        # that alone covers part of the page.
         loose = replace(sp, edge_cover=sp.grow_edge_cover)
         singles = [single_shadow(t, m, sp, g) for t, m, g in zip(result.toned_small, masks, per)]
         agree = np.min([np.where(m, c, np.inf) for c, m in zip(singles, masks)], axis=0)

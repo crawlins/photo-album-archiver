@@ -131,6 +131,55 @@ Changes from the design, all for real pages or what the synthetic ones showed:
   shot shares on the synthetic pages (0.15 finds them, with a false warning
   on one real page).
 
-Not met: 6.2 on two-shot pages with flat pale content; 6.4 on one existing
-synthetic case (seed 2, four sleeve-glare shots) when shadow handling is on;
-6.5 next to synthetic glare.
+Not met at the time: 6.2 on two-shot pages with flat pale content; 6.4 on
+one existing synthetic case (seed 2, four sleeve-glare shots) when shadow
+handling is on; 6.5 next to synthetic glare.
+
+## Follow-up (2026-10-17)
+
+The three gaps above, worked in a second pass. Shadow handling stays off by
+default. Scores from `tools/fit_shadow.py` (which had stopped running once
+the default turned off; it now turns shadow handling on itself), before and
+after:
+
+| group | before | after |
+|-------|--------|-------|
+| `one`, 2 shots: recall / page error | 0.44 / 19.5 | 0.83 / 2.5 grey levels |
+| `one`, 3 shots: recall / page error | 0.81 / 4.3 | 0.81 / 4.3 |
+| `glare`, 2 shots: recall / false | 0.35 / 0.21% | 0.62 / 0.55% |
+| single cue: deep shadows half found | 1 of 30 | 22 of 30 |
+| `none`: pages changed by shadow handling | 1 of 30 | 0 of 30 |
+
+Glare left in the page on the 24 `glare` cases is nowhere more than 0.1%
+above shadow handling off. The five real two-shot pages still come out
+identical with no warning.
+
+- 6.4 (seed 2, four sleeve-glare shots): with four covering shots the
+  reference was the mean of the middle two, so two glared shots of four
+  put half their glare into it and the clean shot looked shadowed. The
+  reference now takes the darker of the middle two (glare only adds light).
+  Met.
+- 6.2 on two shots: the edge test (does the soft edge of the difference lie
+  in this shot or the other) now runs with two shots too, stricter
+  (`own_min_two` 0.85 against 0.3), judged on the area deep enough to seed
+  (`two_min_depth` 0.18) with the shallower rim taking the nearest core's
+  verdict, and kept off the other shot's edges (`two_edge_reach`) and off
+  places where the other shot is brighter than this one's page nearby
+  (`two_level_tol`). Without the last two, seeds 9 and 10 with two shots let
+  glare in where the shadow met the other shot's glare. Where the edge test
+  places the edge in this shot, the glare veto uses the glare score as is,
+  not widened: the score marks a print's bright border, and widened it hid
+  the shadow beside it. Partly met: mean recall 0.83 against 0.9. Most of
+  what is missed lies on content darker than `dark_level` in the shadowed
+  shot. Judging darkness on the other shot instead found it (0.94), but on
+  the real pages page-four and grandma-wilson a sleeve's reflection over a
+  dark print then passed for a 70% shadow, so that change was dropped.
+- 6.5: the single-image cue no longer rebuilds the illumination from edges
+  with glare within `glare_edge_reach` (3%) of their bright side. With
+  them, the page around a glare spot or a sleeve veil came out as a dip,
+  which is why `edge_cover` had to be 0.3. Now 0.12 finds 22 of 30, and the
+  report needs a rim of `grow_edge_cover` 0.15 where one shot alone covers
+  (0.12 there warned on page-two, over a portrait's darker backdrop). The
+  same shadow in every shot (seed 21, `shadow="all"`) is now reported with
+  the defaults. Met; cue-level false seeds in overlaps remain, and the
+  report does not count them unless every covering shot agrees.

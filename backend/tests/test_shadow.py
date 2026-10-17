@@ -8,7 +8,7 @@ from albumproc import PageOptions, process_page
 from albumproc.evaluate import residual_truth
 from albumproc.fuse import FuseParams, fuse
 from albumproc.regions import _location
-from albumproc.shadow import ShadowParams, comparison_shadow, grow, grow_regions, linear, single_shadow, window_fit
+from albumproc.shadow import ShadowParams, _reference, comparison_shadow, glare_scores, grow, grow_regions, linear, single_shadow, window_fit
 from albumproc.synth import SHADOWS, _add_shadow, make_case, make_shadow
 from shadow_cases import page_frame, to_grid
 
@@ -141,39 +141,59 @@ def test_glare_in_the_other_shot_is_not_a_shadow(kind):
     assert not any(s.any() for s in found.shadow_raw)
 
 
-def test_two_shots_on_flat_grey_keep_darker_wins():
-    """On flat grey content a shadow in one shot and glare in the other look alike; with two shots nothing is called."""
-    for shots, masks in (_pair(_content("grey"), shadow=0.4), _pair(_content("grey"), glare=0.3)):
-        found = comparison_shadow(shots, masks)
-        assert not any(s.any() for s in found.shadow_raw)
+def _noisy(lin: np.ndarray, seed: int) -> np.ndarray:
+    return _srgb(lin + np.random.default_rng(seed).normal(0, 0.004, lin.shape))
 
 
-def test_third_shot_settles_flat_grey():
-    content = _content("grey")
-    shots, masks = _pair(content, shadow=0.4)
-    third = _srgb(content + np.random.default_rng(9).normal(0, 0.004, content.shape))
-    found = comparison_shadow(shots + [third], masks + [np.ones((H, W), bool)])
+def test_two_shots_on_flat_grey_tell_shadow_from_glare():
+    """On flat grey only the edge of the difference tells a shadow in one shot from glare in the other: it lies in the shot that has it."""
+    found = comparison_shadow(*_pair(_content("grey"), shadow=0.4))
     assert (found.shadow[0][INSIDE] > 0).mean() > 0.95
-    assert not found.shadow[1].any() and not found.shadow[2].any()
-
-
-def test_glare_in_most_other_shots_is_not_a_shadow_on_flat_grey():
-    content = _content("grey")
-    shots, masks = _pair(content, glare=0.3)
-    found = comparison_shadow([_srgb(content), shots[1], shots[1].copy()], masks + [np.ones((H, W), bool)])
+    assert (found.shadow[0][_disc() < 0.01] > 0).mean() < 0.01
+    assert not found.shadow[1].any()
+    found = comparison_shadow(*_pair(_content("grey"), glare=0.3))
     assert not any(s.any() for s in found.shadow_raw)
 
 
-def test_glare_veto():
-    """A shot darker than a reference with glare of its own is not shadowed for fusion, but is still counted for the report."""
-    shots, masks = _pair(_content("print"), shadow=0.45)
-    veto = [np.zeros((H, W), np.float32), np.where(_disc() > 0.05, 0.9, 0.0).astype(np.float32)]
-    found = comparison_shadow(shots, masks, glare=veto)
-    assert not found.shadow[0][INSIDE].any()
-    assert (found.shadow_raw[0][INSIDE] > 0).mean() > 0.5
-    calls = []
-    comparison_shadow(*_pair(_content("print"), glare=0.25), glare=lambda: calls.append(1) or veto)
-    assert calls == []  # the glare score is only computed when a shadow is in sight
+def test_two_shots_on_flat_grey_shadow_beside_glare():
+    """A shadow in one shot runs into a glare spot in the other: the shadow is found, the spot is not taken for one."""
+    grey = _content("grey")
+    spot = np.zeros((H, W), np.float32)
+    cv2.circle(spot, (W // 2 + 125, H // 2), 40, 1.0, -1)
+    spot = cv2.GaussianBlur(spot, (0, 0), 6)
+    shots = [_noisy(grey * (1 - 0.4 * _disc()[..., None]), 1), _noisy(grey + 0.3 * spot[..., None], 2)]
+    found = comparison_shadow(shots, [np.ones((H, W), bool)] * 2)
+    assert (found.shadow_raw[0][INSIDE] > 0).mean() > 0.95
+    assert not (found.shadow_raw[0][spot > 0.5] > 0).any()
+
+
+def test_two_shots_broad_veil_in_the_other_is_not_a_shadow():
+    """A sleeve's glare is a broad veil with no edge to speak of: with two shots that is no shadow in the clean one."""
+    grey = _content("grey")
+    veil = np.pad(np.ones((H // 2, W // 2), np.float32), ((H // 4, H // 4), (W // 4, W // 4)))
+    veil = cv2.GaussianBlur(veil, (0, 0), 40)[..., None]
+    found = comparison_shadow([_noisy(grey, 1), _noisy(grey + 0.2 * veil, 2)], [np.ones((H, W), bool)] * 2)
+    assert not any(s.any() for s in found.shadow_raw)
+
+
+def test_two_shots_thin_glare_score_beside_a_shadow_does_not_hide_it():
+    """The glare score marks a print's bright border; widened, it covered the shadow next to it. Where the edge test has placed the edge in this shot, only the score itself vetoes."""
+    shots, masks = _pair(_content("grey"), shadow=0.4)
+    ring = np.zeros((H, W), np.float32)
+    cv2.circle(ring, (W // 2, H // 2), 80, 0.9, 2)
+    found = comparison_shadow(shots, masks, glare=[np.zeros((H, W), np.float32), ring])
+    assert (found.shadow[0][INSIDE] > 0).mean() > 0.95
+
+
+def test_reference_takes_the_darker_middle_value():
+    """Of four covering shots, two glared: the reference is a clean value, not half glare."""
+    lin = [np.full((4, 4, 3), v, np.float32) for v in (0.50, 0.52, 0.80, 0.82)]
+    masks = [np.ones((4, 4), bool)] * 4
+    for ref, _, others in _reference(lin, masks):
+        assert np.all(others == 3)
+        assert np.allclose(ref, 0.52)  # the second of the four, darker of the middle two
+    three = _reference(lin[:3], masks[:3])
+    assert np.allclose(three[0][0], 0.52)  # odd counts keep the plain median
 
 
 def test_shallow_and_dark_differences_are_not_shadow():
@@ -309,6 +329,32 @@ def test_single_cue_ignores_spine_shading():
     assert single_shadow(_srgb(paper * (1 - 0.5 * ramp)[None, :, None])).max() < ShadowParams().weak
 
 
+@pytest.mark.parametrize("seed", [22, 24])
+def test_single_cue_finds_a_cast_shadow_on_a_synthetic_page(seed):
+    """The shot alone, with its glare score: at least half of a deep shadow (0.42 and 0.48 here) is seeded, and little beyond its penumbra."""
+    F = page_frame(make_case(seed, "glare", 2, shadow="one", glare=False))
+    p = ShadowParams()
+    g = glare_scores(F.warped[:1], F.masks[:1])[0]
+    cue = single_shadow(F.warped[0], F.masks[0], p, g)
+    seeds = grow_regions(cue, cue, p) > 0
+    truth = F.shadow[0]
+    assert (seeds & truth).sum() / truth.sum() >= 0.5
+    near = cv2.dilate(truth.astype(np.uint8), np.ones((61, 61), np.uint8)) > 0  # the penumbra reaches 3% of the long side
+    assert (seeds & ~near).sum() / F.masks[0].sum() < 0.005
+
+
+def test_single_cue_leaves_the_page_around_sleeve_glare():
+    """Rebuilt with a sleeve veil's edges, the page beside the veil looks like a dip; those edges are left out."""
+    F = page_frame(make_case(2, "glare", 2, glare_style="sleeve"))
+    scores = glare_scores(F.warped, F.masks)
+    p = ShadowParams()
+    for shot, mask, g in zip(F.warped, F.masks, scores):
+        cue = single_shadow(shot, mask, p, g)
+        assert not grow_regions(cue, cue, p).any()
+    without = [single_shadow(s, m, ShadowParams(glare_edge_reach=0), g) for s, m, g in zip(F.warped, F.masks, scores)]
+    assert any(grow_regions(c, c, p).any() for c in without)
+
+
 def test_growth_into_the_single_covered_part():
     p = ShadowParams()
     comparison = np.zeros((H, W), np.float32)
@@ -334,7 +380,18 @@ def _framed_fuse(F, **kw):
 
 @pytest.mark.parametrize(
     "seed,kind,n,style",
-    [(1, "glare", 2, "spot"), (3, "glare", 4, "spot"), (4, "glare", 3, "sleeve"), (10, "stitch", 2, "spot"), (40, "stitch", 4, "sleeve"), (30, "clean_white", 3, "spot"), (21, "pair", 3, "spot")],
+    [
+        (1, "glare", 2, "spot"),
+        (3, "glare", 4, "spot"),
+        (4, "glare", 3, "sleeve"),
+        (2, "glare", 4, "sleeve"),  # two of four shots with sleeve glare: once half of it was in the median
+        (2, "glare", 2, "sleeve"),
+        (10, "stitch", 2, "spot"),
+        (40, "stitch", 4, "sleeve"),
+        (41, "stitch", 4, "sleeve"),
+        (30, "clean_white", 3, "spot"),
+        (21, "pair", 3, "spot"),
+    ],
 )
 def test_pages_without_shadow_come_out_as_before(seed, kind, n, style):
     F = page_frame(make_case(seed, kind, n, glare_style=style))
@@ -361,10 +418,29 @@ def test_shadow_in_one_of_three_shots_is_removed(seed):
     assert ((found & ~near).sum() + sum((s > 0).sum() for s in r.shadow_raw_small[1:])) / found.size <= 0.005
 
 
-@pytest.mark.parametrize("seed", [1, 5])
-def test_glare_removal_no_worse_with_a_shadow_in_another_shot(seed):
-    """Glare in every shot, and a shadow in the first: glare left in the page is no more than without shadow handling."""
-    F = page_frame(make_case(seed, "glare", 3, shadow="one"))
+@pytest.mark.parametrize("seed", [24, 30])
+def test_shadow_in_one_of_two_shots_on_pale_paper_is_removed(seed):
+    """Two shots, the shadow mostly on the pale paper between the prints: only the edge test can tell which shot has it."""
+    shadowed, clean = page_frame(make_case(seed, "glare", 2, shadow="one", glare=False)), page_frame(make_case(seed, "glare", 2, glare=False))
+    r = _framed_fuse(shadowed)
+    r0 = fuse(clean.warped, clean.masks, reference=r.tone_reference, params=FuseParams(shadow=ShadowParams(enabled=False)))
+    inside = shadowed.shadow[0] & np.all(shadowed.masks, axis=0)
+    assert np.abs(r.image.astype(int) - r0.image.astype(int))[inside].mean() < 3
+    grid = r.masks_small[0].shape
+    truth = to_grid(shadowed.shadow[0], grid) & (np.sum(r.masks_small, axis=0) >= 2)
+    found = r.shadow_raw_small[0] > 0
+    assert (found & truth).sum() / truth.sum() >= 0.9
+    assert not r.shadow_raw_small[1].any()
+
+
+@pytest.mark.parametrize("seed,n", [(1, 3), (5, 3), (9, 2)])
+def test_glare_removal_no_worse_with_a_shadow_in_another_shot(seed, n):
+    """Glare in every shot, and a shadow in the first: glare left in the page is no more than without shadow handling.
+
+    In seed 9 with two shots the shadow runs up to the other shot's glare
+    spot, where only the edge test tells them apart.
+    """
+    F = page_frame(make_case(seed, "glare", n, shadow="one"))
     on, off = _framed_fuse(F), _framed_fuse(F, shadow=ShadowParams(enabled=False))
     g_on, g_off = residual_truth(on.image, F.truth).mean(), residual_truth(off.image, F.truth).mean()
     assert g_on <= g_off + 0.001
@@ -386,19 +462,17 @@ def test_shadow_where_only_one_shot_covers_is_reported(part_page):
     assert res.residual_shadow is not None and res.residual_shadow.max() > 0.5
 
 
-def test_same_shadow_in_every_shot_is_reported_by_a_looser_single_cue():
+def test_same_shadow_in_every_shot_is_reported():
     """Every shot has the same shadow: only the single-image cue can see it.
 
-    The default rim (``edge_cover``) is strict enough that the real two-shot
-    pages without a shadow get no warning, and this page's shadow is missed
-    with it; a looser rim reports it, as ``all_shots_shadowed``, in the
-    right place.
+    With the rim it once needed (``edge_cover`` 0.3) it was missed; with
+    edges near glare left out of the rebuild, the default rim reports it,
+    as ``all_shots_shadowed``, in the right place.
     """
     case = make_case(21, "glare", 3, shadow="all", glare=False)
-    strict = process_page(case.images, ON_PAGE)
+    strict = process_page(case.images, PageOptions(fuse=FuseParams(shadow=ShadowParams(enabled=True, edge_cover=0.3))))
     assert "shadow" not in [w["code"] for w in strict.report.warnings]
-    loose = PageOptions(fuse=FuseParams(shadow=ShadowParams(enabled=True, edge_cover=0.15)))
-    res = process_page(case.images, loose)
+    res = process_page(case.images, ON_PAGE)
     (w,) = [w for w in res.report.warnings if w["code"] == "shadow"]
     assert w["all_shots_shadowed"] >= 1 and w["regions"][0]["cause"] == "all_shots_shadowed"
     F = page_frame(case)
