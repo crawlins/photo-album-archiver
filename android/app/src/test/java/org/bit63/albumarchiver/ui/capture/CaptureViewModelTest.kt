@@ -101,6 +101,9 @@ class CaptureViewModelTest {
         repeat(3) {
             vm.takeShot()
             shotsSaved(it + 1)
+            // The shot is saved before the capture lets go of the shutter; a
+            // press before that is dropped (as it should be), not queued.
+            vm.capturing.await { !it }
         }
         val s = vm.state.await { it.shots.size == 3 }
         assertThat(s.shots.map { it.takenAt }).isInOrder()

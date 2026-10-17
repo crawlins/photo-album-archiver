@@ -45,6 +45,12 @@ data class WarningRegion(
     val shots: List<Int>,
     val cause: String?,
     val shotBoxes: Map<String, List<Int>>,
+    /**
+     * Single coverage: the share of the area the server's glare detector saw
+     * as glare (single-shot glare spec, Requirement 2.1); null when it did not
+     * look, or the page was processed before schema 5. Unknown, never 0.
+     */
+    val glareSeen: Double? = null,
 )
 
 data class PageWarning(
@@ -52,9 +58,27 @@ data class PageWarning(
     val message: String,
     val locations: List<String>,
     val regions: List<WarningRegion>,
+    /** Single coverage: how many of [regions] had glare seen at the server's threshold; null when unknown. */
+    val glareSeenRegions: Int? = null,
 ) {
     /** Glare and single coverage are outlined in red, uncovered page in cyan. */
     val isRed: Boolean get() = code != CODE_UNCOVERED
+
+    /**
+     * Whether [region] is drawn dashed: a single-coverage area where no glare
+     * was seen (Requirement 2.8). The server gives the count of regions that
+     * met its threshold, not the threshold itself, so those are the
+     * [glareSeenRegions] regions with the most glare seen. Without both
+     * fields every rectangle is solid, as before.
+     */
+    fun isDashed(region: WarningRegion): Boolean {
+        val k = glareSeenRegions ?: return false
+        val seen = region.glareSeen ?: return false
+        if (code != CODE_SINGLE) return false
+        if (k <= 0) return true
+        val cutoff = regions.mapNotNull { it.glareSeen }.sortedDescending().getOrNull(k - 1) ?: return false
+        return seen < cutoff
+    }
 
     companion object {
         const val CODE_GLARE = "glare"
@@ -66,8 +90,8 @@ data class PageWarning(
     }
 }
 
-/** A rectangle to draw on a photo, as fractions of the photo's width and height. */
-data class ShotRect(val left: Float, val top: Float, val right: Float, val bottom: Float, val code: String)
+/** A rectangle to draw on a photo, as fractions of the photo's width and height; [dashed] where no glare was seen in it. */
+data class ShotRect(val left: Float, val top: Float, val right: Float, val bottom: Float, val code: String, val dashed: Boolean = false)
 
 /** One line of the warnings bar: the message, with where to look when the photo shown does not show it. */
 data class WarningLine(val code: String, val text: String)
@@ -93,7 +117,8 @@ fun parseWarning(element: JsonElement): PageWarning? {
     val code = o.string("code") ?: return null
     val regions = (o["regions"] as? JsonArray)?.mapNotNull { parseRegion(it) } ?: emptyList()
     val locations = (o["locations"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull } ?: emptyList()
-    return PageWarning(code, o.string("message") ?: "", locations, regions)
+    val seenRegions = (o["glare_seen_regions"] as? JsonPrimitive)?.intOrNull
+    return PageWarning(code, o.string("message") ?: "", locations, regions, seenRegions)
 }
 
 private fun parseRegion(element: JsonElement): WarningRegion? {
@@ -104,7 +129,8 @@ private fun parseRegion(element: JsonElement): WarningRegion? {
         val box = (v as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.intOrNull }
         if (box != null && box.size == 4) k to box else null
     }?.toMap() ?: emptyMap()
-    return WarningRegion(bbox, o.string("location"), shots, o.string("cause"), boxes)
+    val glareSeen = (o["glare_seen"] as? JsonPrimitive)?.doubleOrNull
+    return WarningRegion(bbox, o.string("location"), shots, o.string("cause"), boxes, glareSeen)
 }
 
 private fun JsonObject.string(key: String): String? = (this[key] as? JsonPrimitive)?.contentOrNull
@@ -124,6 +150,7 @@ fun List<PageWarning>.rectsFor(shotId: String, width: Int, height: Int): List<Sh
                 ((b[2] + 1).toFloat() / width).coerceIn(0f, 1f),
                 ((b[3] + 1).toFloat() / height).coerceIn(0f, 1f),
                 w.code,
+                w.isDashed(r),
             )
         }
     }
@@ -151,7 +178,7 @@ fun List<PageWarning>.plainLines(): List<WarningLine> = filter { it.message.isNo
 fun List<PageWarning>.pageRects(): List<ShotRect> = filter { it.code in PageWarning.AREA_CODES }.flatMap { w ->
     w.regions.mapNotNull { r ->
         val b = r.bbox ?: return@mapNotNull null
-        ShotRect(b[0].toFloat().coerceIn(0f, 1f), b[1].toFloat().coerceIn(0f, 1f), b[2].toFloat().coerceIn(0f, 1f), b[3].toFloat().coerceIn(0f, 1f), w.code)
+        ShotRect(b[0].toFloat().coerceIn(0f, 1f), b[1].toFloat().coerceIn(0f, 1f), b[2].toFloat().coerceIn(0f, 1f), b[3].toFloat().coerceIn(0f, 1f), w.code, w.isDashed(r))
     }
 }
 

@@ -32,6 +32,9 @@ class Region:
     # The region's box in each used shot's full-resolution pixels, by input
     # index, for the shots its box falls into at all (see ``shot_boxes``).
     shot_boxes: dict[int, tuple[int, int, int, int]] | None = None
+    # Single coverage, with the glare detector on: the share of the region's
+    # pixels the detector counts as residual glare. None where nobody looked.
+    glare_seen: float | None = None
 
     def to_dict(self) -> dict:
         return {k: v for k, v in asdict(self).items() if v is not None}
@@ -45,6 +48,10 @@ class QualityParams:
     # min_region_area: the seam between two overlapping shots always leaves a
     # thin band only one of them covers, and that is not worth a warning.
     min_single_area: float = 0.01
+    # A single-coverage region with at least this share of glare seen in it is
+    # named first in the warning and drawn solid in the app. Low on purpose:
+    # the detectors miss most single-shot glare, so what they do see counts.
+    glare_seen: float = 0.02
 
 
 def _location(cx: float, cy: float) -> str:
@@ -148,18 +155,24 @@ def single_coverage_regions(
     shot_masks: list[np.ndarray],
     page_size: tuple[int, int],
     q: QualityParams,
+    residual: np.ndarray | None = None,
 ) -> list[Region]:
     """Regions of the page exactly one shot covers, each with that shot.
 
     Glare there cannot be removed by comparison, only detected. An opening
     of 3 grid px first removes the band along the seam between overlapping
-    shots, which is single-covered but harmless.
+    shots, which is single-covered but harmless. With the detector's
+    ``residual`` glare map, each region's ``glare_seen`` is the share of its
+    pixels at or above the residual threshold; without it the field stays
+    unset, so that "not looked" is not read as "clean".
     """
     single = cv2.morphologyEx((coverage_count == 1).astype(np.uint8), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8)) > 0
     out = []
     for region, m in find_regions(single, page_size, q.min_single_area):
         overlap = [float((sm & m).sum()) for sm in shot_masks]
         region.shots = [used[int(np.argmax(overlap))]] if any(overlap) else []
+        if residual is not None:
+            region.glare_seen = round(float((residual[m] >= q.residual_threshold).mean()), 4)
         out.append(region)
     return out
 
@@ -240,7 +253,7 @@ def _place(r: dict) -> str:
 
 def _carried(r: dict) -> dict:
     """What a warning carries of a region: enough to draw and place it, without the page-frame detail."""
-    return {k: r[k] for k in ("bbox", "bbox_px", "location", "shots", "cause", "edges", "shot_boxes") if k in r}
+    return {k: r[k] for k in ("bbox", "bbox_px", "location", "shots", "cause", "edges", "shot_boxes", "glare_seen") if k in r}
 
 
 def shadow_warning(shadow: dict) -> dict:
@@ -277,7 +290,51 @@ def shadow_warning(shadow: dict) -> dict:
     }
 
 
-def page_warnings(glare: dict, uncovered: dict, dropped: list[int], single: dict | None = None, shadow: dict | None = None) -> list[dict]:
+def single_coverage_warning(single: dict, glare_seen: float = 0.02) -> dict:
+    """The ``single_coverage`` warning, from the page's single-coverage summary (which has at least one region).
+
+    The warning is raised whether or not glare was seen: the detectors miss
+    most single-shot glare, so a region with none seen is not shown to be
+    clean. What glare seen changes is the message, which names the largest
+    region with at least ``glare_seen`` of it seen as glare first, and
+    ``glare_seen_regions``, given only when the detector looked.
+    """
+    regions = single["regions"]
+    n = len(regions)
+    looked = any("glare_seen" in r for r in regions)
+    seen = [r for r in regions if r.get("glare_seen") is not None and r["glare_seen"] >= glare_seen]
+    if seen:
+        lead = seen[0]
+        msg = f"Only one photo covers the {_place(lead)}, and glare was seen there ({_pct(lead['area'])} of the page)."
+        if n == 1:
+            msg += " Take another shot of that part from a different angle so that the glare can be removed."
+        else:
+            others = n - 1
+            msg += (
+                f" {others} other area{'s are' if others > 1 else ' is'} in one photo only too ({_pct(single['fraction'])} of the page in all)."
+                f" Take another shot of each from a different angle, starting with the {_place(lead)}, so that glare there can be removed."
+            )
+    else:
+        where = _place(regions[0]) if n == 1 else f"{_place(regions[0])} and {n - 1} other area{'s' if n > 2 else ''}"
+        msg = (
+            f"Only one photo covers the {where} ({_pct(single['fraction'])} of the page)."
+            f" Take another shot of {'that part' if n == 1 else 'those parts'} from a different angle so that glare there can be removed."
+        )
+    out = {
+        "code": "single_coverage",
+        "fraction": single["fraction"],
+        "locations": [r["location"] for r in regions],
+        "regions": [_carried(r) for r in regions],
+        "message": msg,
+    }
+    if looked:
+        out["glare_seen_regions"] = len(seen)
+    return out
+
+
+def page_warnings(
+    glare: dict, uncovered: dict, dropped: list[int], single: dict | None = None, shadow: dict | None = None, glare_seen: float = 0.02
+) -> list[dict]:
     """Warnings for the page metadata, from its glare, shadow, uncovered and single-coverage summaries.
 
     Every warning about an area carries its ``regions``, so a reader of the
@@ -331,22 +388,8 @@ def page_warnings(glare: dict, uncovered: dict, dropped: list[int], single: dict
                 "message": f"{_pct(uncovered['fraction'])} of the page is not in any photo ({', '.join(places)}).",
             }
         )
-    regions = single["regions"] if single else []
-    if regions:
-        n = len(regions)
-        where = _place(regions[0]) if n == 1 else f"{_place(regions[0])} and {n - 1} other area{'s' if n > 2 else ''}"
-        out.append(
-            {
-                "code": "single_coverage",
-                "fraction": single["fraction"],
-                "locations": [r["location"] for r in regions],
-                "regions": [_carried(r) for r in regions],
-                "message": (
-                    f"Only one photo covers the {where} ({_pct(single['fraction'])} of the page)."
-                    f" Take another shot of {'that part' if n == 1 else 'those parts'} from a different angle so that glare there can be removed."
-                ),
-            }
-        )
+    if single and single["regions"]:
+        out.append(single_coverage_warning(single, glare_seen))
     if dropped:
         which = ", ".join(str(i) for i in dropped)
         out.append(

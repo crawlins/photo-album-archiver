@@ -22,6 +22,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.Dp
@@ -82,11 +83,13 @@ fun WarningRects(rects: List<ShotRect>, imageAspect: Float, modifier: Modifier =
         val fitted = if (imageAspect >= boxAspect) Size(size.width, size.width / imageAspect) else Size(size.height * imageAspect, size.height)
         val origin = Offset((size.width - fitted.width) / 2, (size.height - fitted.height) / 2)
         val stroke = Stroke(width = 2.dp.toPx())
+        // Single-covered areas with no glare seen: the same colour, dashed (single-shot glare Requirement 2.8).
+        val dashed = Stroke(width = 2.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(8.dp.toPx(), 6.dp.toPx())))
         for (r in rects) {
             val topLeft = Offset(origin.x + r.left * fitted.width, origin.y + r.top * fitted.height)
             val extent = Size((r.right - r.left) * fitted.width, (r.bottom - r.top) * fitted.height)
             if (extent.width <= 0f || extent.height <= 0f) continue
-            drawRect(if (r.code == PageWarning.CODE_UNCOVERED) UncoveredCyan else WarningRed, topLeft, extent, style = stroke)
+            drawRect(if (r.code == PageWarning.CODE_UNCOVERED) UncoveredCyan else WarningRed, topLeft, extent, style = if (r.dashed) dashed else stroke)
         }
     }
 }

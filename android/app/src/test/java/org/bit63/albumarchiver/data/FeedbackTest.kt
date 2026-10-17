@@ -92,4 +92,38 @@ class FeedbackTest {
         assertThat(parseOutlines("[]")).isEmpty()
         assertThat(parseOutlines("nope")).isEmpty()
     }
+
+    private fun singleOf(seen: List<Double?>, count: Int?): String {
+        val regions = seen.mapIndexed { i, g ->
+            val field = if (g == null) "" else ""","glare_seen":$g"""
+            """{"bbox":[${i * 0.5},0,${i * 0.5 + 0.4},1],"location":"x","shots":[$i],"shot_boxes":{"s$i":[0,0,99,99]}$field}"""
+        }
+        val k = if (count == null) "" else ""","glare_seen_regions":$count"""
+        return """[{"code":"single_coverage","fraction":0.8,"locations":[],"regions":[${regions.joinToString(",")}],"message":"m"$k}]"""
+    }
+
+    @Test fun `glare seen parses and is unknown when absent`() {
+        val w = parseWarnings(singleOf(listOf(0.31, 0.0), 1)).single()
+        assertThat(w.glareSeenRegions).isEqualTo(1)
+        assertThat(w.regions.map { it.glareSeen }).containsExactly(0.31, 0.0).inOrder()
+        // Pages processed before schema 5, or with the detector off: no fields, unknown, never 0.
+        val old = parseWarnings("[$single]").single()
+        assertThat(old.glareSeenRegions).isNull()
+        assertThat(old.regions.single().glareSeen).isNull()
+    }
+
+    @Test fun `areas with glare seen are solid and the others dashed`() {
+        val w = parseWarnings(singleOf(listOf(0.01, 0.31), 1))
+        assertThat(w.pageRects().map { it.dashed }).containsExactly(true, false).inOrder()
+        assertThat(w.rectsFor("s0", 100, 100).single().dashed).isTrue()
+        assertThat(w.rectsFor("s1", 100, 100).single().dashed).isFalse()
+        // None met the threshold: all dashed, in the same red.
+        assertThat(parseWarnings(singleOf(listOf(0.01, 0.0), 0)).pageRects().map { it.dashed }).containsExactly(true, true)
+        assertThat(parseWarnings(singleOf(listOf(0.5, 0.2), 2)).pageRects().map { it.dashed }).containsExactly(false, false)
+        // Without the count or a region's value, solid as before.
+        assertThat(parseWarnings(singleOf(listOf(0.01, 0.31), null)).pageRects().map { it.dashed }).containsExactly(false, false)
+        assertThat(parseWarnings(singleOf(listOf(null, 0.31), 1)).pageRects().map { it.dashed }).containsExactly(false, false)
+        assertThat(parseWarnings("[$single,$glare,$uncovered]").pageRects().map { it.dashed }).containsExactly(false, false, false)
+        assertThat(parseWarnings(singleOf(listOf(0.01, 0.31), 1)).pageRects().map { it.code }.distinct()).containsExactly("single_coverage")
+    }
 }

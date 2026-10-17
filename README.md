@@ -108,7 +108,30 @@ warning with regions (the seam between two shots is ignored; the minimum is
 warning about an area carries its regions, each with `shot_boxes`: the
 region's box in each photo's own pixels, so the capture app can outline on
 the photo where the next shot should go. That, not single-photo detection,
-is what the project relies on against glare.
+is what the project relies on against glare. Each single-coverage region
+also says how much of it the glare detector saw as glare (`glare_seen`,
+left out with the detector off, since "not looked" is not "clean"), and the
+warning names the largest region with at least 2% seen first (`--glare-seen`)
+and counts them (`glare_seen_regions`). The warning is raised either way:
+the detectors miss most single-shot glare.
+
+Whether following that prompt removes the glare was measured on the 19
+real glare-album pages (`tools/replay_glare.py`, run by hand on the private
+photos on 2026-10-17 at `62e9eb1` with the tool as added after it): each
+page is replayed from fewer shots, and the shot that covers the outlined
+area is added, as a user following the prompt would. Started from a stitch
+of two shots, two prompted shots removed 93% of the single-shot glare (3
+replays, one page). Started from one whole-page photo, they removed 54%
+(9 replays, 8 pages), or 66% with the shot that covers the least of the
+area while still covering half of it. What stays looks like glare the
+added shot has in the same place: the shot covering most of the area is
+often the one taken next, from about the same angle, and does worse than
+one taken from elsewhere. With the area then covered twice the prompt goes
+away, and no detector reports what is left.
+No glare was found in single coverage outside every warned area. So two
+shots over every part of a page do not by themselves remove the glare;
+the single-shot glare spec stops there until its design is revisited
+(`.kiro/specs/single-shot-glare/tasks.md`).
 
 Known limit: the single-photo detector is cautious. Faint sleeve sheen looks
 much like pale print content, white borders and white paper in one photo, so
@@ -248,6 +271,10 @@ and uploads the shots to the server. All image work happens on the backend.
   look at them.
 - **Settings**: the server URL and access token (stored encrypted), "Test
   connection", and the upload network.
+- **Pages that need another shot.** With a server set, a page whose last run
+  found glare or part of the page in one photo only gets a red dot, and its
+  photos show the area outlined: solid where glare was seen there, dashed
+  where none was (which is not proof there is none).
 
 ### Build and install
 
