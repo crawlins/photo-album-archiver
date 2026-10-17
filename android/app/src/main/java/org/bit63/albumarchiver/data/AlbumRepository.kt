@@ -89,6 +89,13 @@ class AlbumRepository(
             fb.filter { it.pageId !in pending && it.warnings.marksPage() }.map { it.pageId }.toSet()
         }
 
+    /** The number of red-dot pages of every album that has one, by album id (single-shot glare spec, Requirement 4.1). */
+    fun observeWarnedCounts(): Flow<Map<String, Int>> =
+        combine(feedback.observeAll(), ops.observeAllPendingPages()) { fb, pending ->
+            val queued = pending.toSet()
+            fb.filter { it.pageId !in queued && it.warnings.marksPage() }.groupingBy { it.albumId }.eachCount()
+        }
+
     /** The page new shots go to: the album's target page when set and still there, else its last page (Requirement 4.7). */
     fun observeTargetPage(albumId: String): Flow<Page?> =
         combine(observeAlbum(albumId), observePages(albumId)) { album, ps ->

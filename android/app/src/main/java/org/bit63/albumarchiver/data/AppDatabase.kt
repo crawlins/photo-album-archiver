@@ -131,6 +131,9 @@ interface UploadOpDao {
     /** Pages with a shot still to upload: the server's feedback on them is out of date (overlap coverage Requirement 4.12). */
     @Query("SELECT DISTINCT pageId FROM upload_op WHERE kind = 'PUT_SHOT' AND albumId = :albumId AND pageId IS NOT NULL")
     fun observePendingPages(albumId: String): Flow<List<String>>
+    /** [observePendingPages] for every album at once. */
+    @Query("SELECT DISTINCT pageId FROM upload_op WHERE kind = 'PUT_SHOT' AND pageId IS NOT NULL")
+    fun observeAllPendingPages(): Flow<List<String>>
 }
 
 @Dao
@@ -138,6 +141,7 @@ interface PageFeedbackDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun upsert(rows: List<PageFeedback>)
     @Query("SELECT * FROM page_feedback WHERE pageId = :pageId") suspend fun get(pageId: String): PageFeedback?
     @Query("SELECT * FROM page_feedback WHERE albumId = :albumId") fun observeForAlbum(albumId: String): Flow<List<PageFeedback>>
+    @Query("SELECT * FROM page_feedback") fun observeAll(): Flow<List<PageFeedback>>
     @Query("SELECT * FROM page_feedback WHERE pageId = :pageId") fun observe(pageId: String): Flow<PageFeedback?>
     @Query("DELETE FROM page_feedback WHERE pageId = :pageId") suspend fun delete(pageId: String)
 }

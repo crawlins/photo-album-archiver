@@ -95,4 +95,28 @@ class AlbumsViewModelTest {
         val rows = vm.albums.await { it.size == 2 }
         assertThat(rows.map { it.summary.name }).containsExactly("Second", "First").inOrder()
     }
+
+    @Test fun `each album shows how many of its pages have a red dot`() = blocking {
+        val a = env.repo.createAlbum("A", PageSize.DEFAULT)
+        val b = env.repo.createAlbum("B", PageSize.DEFAULT)
+        env.repo.addShot(a.id, "s1", env.written("s1"))
+        val p1 = env.repo.lastPage(a.id)!!.id
+        env.repo.startNextPage(a.id)
+        env.repo.addShot(a.id, "s2", env.written("s2"))
+        val p2 = env.repo.lastPage(a.id)!!.id
+        env.repo.addShot(b.id, "s3", env.written("s3"))
+        val warning = """[{"code":"single_coverage","message":"m","regions":[]}]"""
+        env.repo.saveFeedback(listOf(
+            org.bit63.albumarchiver.data.PageFeedback(p1, a.id, "done", null, warning, env.clock.instant()),
+            org.bit63.albumarchiver.data.PageFeedback(p2, a.id, "done", null, warning, env.clock.instant()),
+        ))
+        // Nothing has a dot while its shots are queued.
+        assertThat(vm.albums.await { it.size == 2 }.map { it.warnedPages }).containsExactly(0, 0)
+        env.db.ops().all().forEach { env.db.ops().delete(it.seq) }
+        // The ops go one at a time, so wait for the last of them.
+        val rows = vm.albums.await { r -> r.any { it.warnedPages == 2 } }
+        assertThat(rows.associate { it.summary.name to it.warnedPages }).containsExactly("A", 2, "B", 0)
+        assertThat(warnedLabel(1)).isEqualTo("1 page needs another shot")
+        assertThat(warnedLabel(2)).isEqualTo("2 pages need another shot")
+    }
 }

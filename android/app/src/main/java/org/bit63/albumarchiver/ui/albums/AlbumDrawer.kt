@@ -38,6 +38,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import org.bit63.albumarchiver.data.AlbumSummary
+import org.bit63.albumarchiver.ui.WarningRed
 
 /**
  * The navigation drawer (Requirement 2.2): "New album", the albums on this
@@ -126,6 +127,14 @@ private fun AlbumRowItem(
                 )
                 val pages = if (s.pageCount == 1) "1 page" else "${s.pageCount} pages"
                 Text("$pages · ${row.upload.label}", style = MaterialTheme.typography.bodySmall)
+                if (row.warnedPages > 0) {
+                    Text(
+                        warnedLabel(row.warnedPages),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = WarningRed,
+                        modifier = Modifier.testTag("albumWarned:${s.name}"),
+                    )
+                }
             }
             IconButton(onClick = onOverview) {
                 Icon(Icons.AutoMirrored.Filled.ViewList, contentDescription = "Pages of ${s.name}")
@@ -137,6 +146,8 @@ private fun AlbumRowItem(
         }
     }
 }
+
+fun warnedLabel(n: Int) = if (n == 1) "1 page needs another shot" else "$n pages need another shot"
 
 /** Confirms deleting an album from the phone, with "Also delete from the server" off by default (Requirement 2.7). */
 @Composable
