@@ -139,7 +139,12 @@ Nothing is implemented; every task (1.1 to 7) is open. Blocked on PR #1.
   been shot under the overlap coverage guarantee, label every page with
   `tools/real_glare_data.py`, hold that album out for testing, retrain
   (design "Option A": whole-page context, page brightness as an input,
-  `clean_white` hard negatives), and compare with the spec's replay numbers.
+  `clean_white` hard negatives), and compare with the spec's replay numbers
+  (2026-10-17, `main` at `62e9eb1`: two prompted shots removed 55% of the
+  single-shot glare over 12 replays on 9 pages, 93% from stitch pairs and
+  54% from one-photo starts; `net` flagged 45% of it at the 2% glare-seen
+  threshold with no clean flagged region, `features` none; see the spec's
+  `tasks.md` notes).
   Make `net` the default only at recall 0.5 or more, false alarms at most
   0.2% of clean area and no `glare` warning on `clean_white`. Photos and
   labels stay in `crawlins/photo-album-archiver-data`; only the exported
