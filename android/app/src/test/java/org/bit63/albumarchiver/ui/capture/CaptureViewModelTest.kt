@@ -317,4 +317,65 @@ class CaptureViewModelTest {
         env.repo.saveFeedback(listOf(PageFeedback(p2, albumId, "done", null, "[]", env.clock.instant())))
         vm.state.await { !it.warned }
     }
+
+    private fun singleWarning(page: String, albumId: String) =
+        PageFeedback(page, albumId, "done", null, """[{"code":"single_coverage","message":"m","regions":[]}]""", env.clock.instant())
+
+    @Test fun `a page left behind that needs another shot shows the notice and vibrates once`() = blocking {
+        env.settings.setServer("http://server", "t")
+        val (albumId, p1) = twoPages()
+        env.db.ops().all().forEach { env.db.ops().delete(it.seq) }
+        assertThat(vm.otherWarned.value).isNull()
+        vm.events.test {
+            env.repo.saveFeedback(listOf(singleWarning(p1, albumId)))
+            assertThat(next<CaptureEvent.OtherPageWarned>()).isEqualTo(CaptureEvent.OtherPageWarned)
+            assertThat(vm.otherWarned.await { it != null }).isEqualTo(OtherWarned(p1, 1, 0))
+            // The same warning again is not news.
+            env.repo.saveFeedback(listOf(singleWarning(p1, albumId).copy(fetchedAt = env.clock.instant())))
+            expectNoEvents()
+            cancelAndIgnoreRemainingEvents()
+        }
+        // Shooting into page 1 makes it the target: no notice for it then.
+        vm.addShotsToPage(p1)
+        vm.otherWarned.await { it == null }
+        vm.backToLastPage()
+        vm.otherWarned.await { it != null }
+        // Its warnings clear: the notice goes.
+        env.repo.saveFeedback(listOf(PageFeedback(p1, albumId, "done", null, "[]", env.clock.instant())))
+        vm.otherWarned.await { it == null }
+    }
+
+    @Test fun `no notice without a server`() = blocking {
+        val (albumId, p1) = twoPages()
+        env.db.ops().all().forEach { env.db.ops().delete(it.seq) }
+        env.repo.saveFeedback(listOf(singleWarning(p1, albumId)))
+        vm.warnedPages.await { p1 in it }
+        Thread.sleep(200)
+        assertThat(vm.otherWarned.value).isNull()
+    }
+
+    @Test fun `the notice opens the review at the warned page's first boxed photo`() = blocking {
+        val (albumId, p1) = twoPages()
+        env.repo.addShot(albumId, "s1b", env.written("s1b"), p1)
+        val boxed = """[{"code":"single_coverage","message":"m","regions":[{"shot_boxes":{"s1b":[0,0,9,9]}}]}]"""
+        env.repo.saveFeedback(listOf(PageFeedback(p1, albumId, "done", null, boxed, env.clock.instant())))
+        assertThat(vm.reviewIndexFor(p1)).isEqualTo(1)
+        env.repo.saveFeedback(listOf(PageFeedback(p1, albumId, "done", null, "[]", env.clock.instant())))
+        assertThat(vm.reviewIndexFor(p1)).isEqualTo(0)
+    }
+
+    @Test fun `work left counts pending and warned pages of the current album`() = blocking {
+        val (albumId, p1) = twoPages()
+        assertThat(vm.workLeft.value.ask).isFalse()  // no server
+        env.settings.setServer("http://server", "t")
+        // Both pages have queued shots and no feedback yet.
+        assertThat(vm.workLeft.await { it.serverConfigured && it.pending == 2 }.ask).isTrue()
+        env.db.ops().all().forEach { env.db.ops().delete(it.seq) }
+        val p2 = env.repo.lastPage(albumId)!!.id
+        env.repo.saveFeedback(listOf(singleWarning(p1, albumId), PageFeedback(p2, albumId, "done", null, "[]", env.clock.instant())))
+        val w = vm.workLeft.await { it.pending == 0 }
+        assertThat(w.warned).isEqualTo(1)
+        env.repo.saveFeedback(listOf(PageFeedback(p1, albumId, "done", null, "[]", env.clock.instant())))
+        assertThat(vm.workLeft.await { it.warned == 0 }.ask).isFalse()
+    }
 }

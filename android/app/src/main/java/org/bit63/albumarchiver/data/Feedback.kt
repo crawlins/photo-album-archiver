@@ -201,6 +201,9 @@ fun List<PageWarning>.firstShotWithBox(shotIds: List<String>): String? {
     return shotIds.firstOrNull { it in boxed }
 }
 
+/** The index in [shotIds] the review opens a warned page at: the first photo with a box, else the first (Requirement 4.4). */
+fun List<PageWarning>.reviewIndex(shotIds: List<String>): Int = firstShotWithBox(shotIds)?.let { shotIds.indexOf(it) }?.coerceAtLeast(0) ?: 0
+
 /** The shot ids whose photo shows one of [region]'s boxes, in the order of [shotIds]. */
 fun shotsShowing(region: WarningRegion, shotIds: List<String>): List<String> = shotIds.filter { it in region.shotBoxes }
 

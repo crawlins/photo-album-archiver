@@ -2,9 +2,12 @@ package org.bit63.albumarchiver.ui.capture
 
 import android.Manifest
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.VibrationEffect
+import android.os.Vibrator
 import android.provider.Settings
 import android.view.HapticFeedbackConstants
 import androidx.activity.compose.BackHandler
@@ -88,8 +91,10 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.compose.currentStateAsState
 import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.bit63.albumarchiver.camera.CameraController
 import org.bit63.albumarchiver.data.AlbumSummary
@@ -101,6 +106,8 @@ import org.bit63.albumarchiver.ui.WarningDot
 import org.bit63.albumarchiver.ui.VolumeKeyRouter
 import org.bit63.albumarchiver.ui.albums.AlbumDialog
 import org.bit63.albumarchiver.ui.albums.AlbumDrawer
+import org.bit63.albumarchiver.ui.albums.LeaveAlbumDialog
+import org.bit63.albumarchiver.ui.albums.LeaveAlbumGuard
 import org.bit63.albumarchiver.ui.albums.AlbumForm
 import org.bit63.albumarchiver.ui.albums.AlbumsViewModel
 import org.bit63.albumarchiver.ui.albums.DeleteAlbumDialog
@@ -142,6 +149,10 @@ fun CaptureScreen(
     val albumRows by albumsVm.albums.collectAsStateWithLifecycle()
     val selectedShot by vm.shotActions.selected.collectAsStateWithLifecycle()
     val shotMenu by vm.shotActions.menu.collectAsStateWithLifecycle()
+    val otherWarned by vm.otherWarned.collectAsStateWithLifecycle()
+    val workLeft by vm.workLeft.collectAsStateWithLifecycle()
+    val leaveGuard = remember { LeaveAlbumGuard() }
+    val context = LocalContext.current
 
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -164,7 +175,7 @@ fun CaptureScreen(
     val keysActive = lifecycleState.isAtLeast(Lifecycle.State.RESUMED) &&
         state.album != null &&
         drawerState.currentValue == DrawerValue.Closed && drawerState.targetValue == DrawerValue.Closed &&
-        dialog == null && shotMenu == null
+        dialog == null && shotMenu == null && leaveGuard.leaving == null
     val currentVm by rememberUpdatedState(vm)
     DisposableEffect(keysActive, volumeKeys) {
         val handler = object : VolumeKeyRouter.Handler {
@@ -207,6 +218,7 @@ fun CaptureScreen(
                         if (result == SnackbarResult.ActionPerformed) vm.undoNextPage(event.pageId)
                     }
                 }
+                is CaptureEvent.OtherPageWarned -> vibrateOnce(context)
                 is CaptureEvent.Message -> launch {
                     snackbar.currentSnackbarData?.dismiss()
                     snackbar.showSnackbar(event.text, duration = SnackbarDuration.Short)
@@ -223,11 +235,11 @@ fun CaptureScreen(
                 currentAlbumId = state.album?.id,
                 onNewAlbum = {
                     scope.launch { drawerState.close() }
-                    dialog = CaptureDialog.NewAlbum
+                    leaveGuard.request(workLeft) { dialog = CaptureDialog.NewAlbum }
                 },
-                onSelect = {
-                    albumsVm.select(it)
+                onSelect = { id ->
                     scope.launch { drawerState.close() }
+                    if (id == state.album?.id) albumsVm.select(id) else leaveGuard.request(workLeft) { albumsVm.select(id) }
                 },
                 onOverview = {
                     scope.launch { drawerState.close() }
@@ -242,7 +254,7 @@ fun CaptureScreen(
                 onDelete = { dialog = CaptureDialog.DeleteAlbum(it) },
                 onServerAlbums = {
                     scope.launch { drawerState.close() }
-                    openServerAlbums()
+                    leaveGuard.request(workLeft) { openServerAlbums() }
                 },
                 onSettings = {
                     scope.launch { drawerState.close() }
@@ -285,6 +297,16 @@ fun CaptureScreen(
                     EmptyState(onNewAlbum = { dialog = CaptureDialog.NewAlbum })
                     Spacer(Modifier.weight(1f))
                 } else if (state.album != null) {
+                    otherWarned?.let { notice ->
+                        OtherPageNotice(notice) {
+                            val album = state.album ?: return@OtherPageNotice
+                            scope.launch {
+                                val index = vm.reviewIndexFor(notice.pageId)
+                                // Navigation belongs on the main thread; the index came from IO.
+                                withContext(Dispatchers.Main) { openReview(album.id, notice.pageId, index) }
+                            }
+                        }
+                    }
                     LimitHint(state)
                     ShotStrip(
                         shots = state.shots,
@@ -334,6 +356,18 @@ fun CaptureScreen(
 
     shotMenu?.let { menu ->
         ShotActionsSheet(menu, onAction = vm::shotAction, onDismiss = vm.shotActions::closeMenu)
+    }
+
+    // Asked once before leaving an album with pages that need a shot or are
+    // still being checked (single-shot glare spec, Requirement 4).
+    if (leaveGuard.leaving != null) {
+        LeaveAlbumDialog(
+            albumName = state.album?.name ?: "this album",
+            work = workLeft,
+            onStay = { leaveGuard.stay { state.album?.let { openOverview(it.id) } } },
+            onLeave = leaveGuard::leaveAnyway,
+            onDismiss = leaveGuard::dismiss,
+        )
     }
 
     when (val d = dialog) {
@@ -539,6 +573,35 @@ private fun EmptyState(onNewAlbum: () -> Unit) {
 }
 
 /** "Page full" and "Album full" hints (Requirements 4.10, 5.6). */
+/**
+ * One line above the thumbnails naming a page the user has left that needs
+ * another shot (single-shot glare spec, Requirement 3): clear of the
+ * shutter, "Next page" and the preview's centre; a tap opens its review.
+ */
+@Composable
+private fun OtherPageNotice(notice: OtherWarned, onTap: () -> Unit) {
+    Text(
+        notice.text,
+        color = Color.White,
+        textAlign = TextAlign.Center,
+        style = MaterialTheme.typography.bodyMedium,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 24.dp, vertical = 4.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(Color(0xCCB71C1C))
+            .clickable(onClick = onTap)
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+            .testTag("otherPageNotice"),
+    )
+}
+
+/** A short vibration, for a notice the user may not be looking at (Requirement 3.3). */
+private fun vibrateOnce(context: Context) {
+    val vibrator = context.getSystemService(Vibrator::class.java) ?: return
+    if (vibrator.hasVibrator()) vibrator.vibrate(VibrationEffect.createOneShot(150, VibrationEffect.DEFAULT_AMPLITUDE))
+}
+
 @Composable
 private fun LimitHint(state: CaptureState) {
     val text = when {

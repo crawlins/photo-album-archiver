@@ -20,7 +20,7 @@ import org.bit63.albumarchiver.data.PageFeedback
 import org.bit63.albumarchiver.data.PageWarning
 import org.bit63.albumarchiver.data.Shot
 import org.bit63.albumarchiver.data.ShotRect
-import org.bit63.albumarchiver.data.firstShotWithBox
+import org.bit63.albumarchiver.data.reviewIndex
 import org.bit63.albumarchiver.data.pageRects
 import org.bit63.albumarchiver.data.parseOutlines
 import org.bit63.albumarchiver.upload.FeedbackPoller
@@ -82,7 +82,7 @@ data class PageViewState(
     /** The shot the "Shot" toggle opens: the selection, else the first that shows a warning, else the first (Requirement 6.5). */
     fun shotToOpen(): Int {
         val ids = shots.map { it.id }
-        val id = selectedShotId ?: warnings.firstShotWithBox(ids) ?: ids.firstOrNull() ?: return 0
+        val id = selectedShotId ?: return warnings.reviewIndex(ids)
         return ids.indexOf(id).coerceAtLeast(0)
     }
 }

@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
@@ -31,9 +32,12 @@ import org.bit63.albumarchiver.data.Page
 import org.bit63.albumarchiver.data.SettingsStore
 import org.bit63.albumarchiver.data.Shot
 import org.bit63.albumarchiver.data.ShotStore
+import org.bit63.albumarchiver.data.reviewIndex
 import org.bit63.albumarchiver.ui.ShotAction
 import org.bit63.albumarchiver.ui.ShotActionOutcome
 import org.bit63.albumarchiver.ui.ShotActions
+import org.bit63.albumarchiver.ui.albums.AlbumWorkLeft
+import org.bit63.albumarchiver.ui.albums.albumWorkLeft
 import org.bit63.albumarchiver.upload.FeedbackPoller
 import java.util.UUID
 import kotlin.coroutines.CoroutineContext
@@ -65,6 +69,8 @@ sealed interface CaptureEvent {
     data class ShotSaved(val shot: Shot) : CaptureEvent
     data class PageStarted(val pageId: String, val number: Int) : CaptureEvent
     data class Message(val text: String) : CaptureEvent
+    /** A page the user has left now needs another shot: vibrate once (single-shot glare Requirement 3.3). */
+    data object OtherPageWarned : CaptureEvent
 }
 
 /**
@@ -105,6 +111,33 @@ class CaptureViewModel(
     val warnedPages: StateFlow<Set<String>> = album.flatMapLatest { a ->
         if (a == null) flowOf(emptySet()) else repo.observeWarnedPages(a.id)
     }.stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
+
+    /**
+     * Pages other than the target page that need another shot, lowest number
+     * first (single-shot glare spec, Requirement 3); none while no server is
+     * configured.
+     */
+    private fun otherWarnedOf(albumId: String): Flow<List<Page>> = combine(
+        combine(repo.observePages(albumId), repo.observeFeedback(albumId)) { ps, fb -> ps to fb },
+        repo.observeWarnedPages(albumId),
+        repo.observeTargetPage(albumId).map { it?.id },
+        settings.server,
+    ) { (ps, fb), warned, target, server -> if (server == null) emptyList() else otherWarnedPages(ps, fb, warned, target) }
+
+    /** The notice for pages the user has left (Requirement 3.1); null when there is none. */
+    val otherWarned: StateFlow<OtherWarned?> = album.map { it?.id }.distinctUntilChanged().flatMapLatest { id ->
+        if (id == null) flowOf(null) else otherWarnedOf(id).map { it.toNotice() }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    /** What is left to do on the current album, for the question before leaving it (Requirement 4). */
+    val workLeft: StateFlow<AlbumWorkLeft> = album.map { it?.id }.distinctUntilChanged().flatMapLatest { id ->
+        if (id == null) flowOf(AlbumWorkLeft()) else combine(
+            combine(repo.observePages(id), repo.observeFeedback(id)) { ps, fb -> ps to fb },
+            repo.observePendingPages(id),
+            repo.observeWarnedPages(id),
+            settings.server,
+        ) { (ps, fb), queued, warned, server -> albumWorkLeft(ps, fb, queued, warned, server != null) }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, AlbumWorkLeft())
 
     private val shots: Flow<List<Shot>> = page.flatMapLatest { p ->
         if (p == null) flowOf(emptyList()) else repo.observeShots(p.id)
@@ -150,6 +183,16 @@ class CaptureViewModel(
         refreshStorage()
         // Page feedback from the server while this screen lives (Requirement 4.1).
         feedback?.start(viewModelScope, album.map { it?.id }, uploadRunning)
+        // One vibration for each page that becomes an other warned page while
+        // this screen is open; what was warned when the album opened is not news.
+        viewModelScope.launch {
+            album.map { it?.id }.distinctUntilChanged().flatMapLatest { id ->
+                if (id == null) flowOf(emptySet()) else {
+                    val tracker = NewlyWarned()
+                    otherWarnedOf(id).map { ps -> ps.map { it.id }.toSet() }.distinctUntilChanged().map { tracker.update(it) }
+                }
+            }.collect { if (it.isNotEmpty()) eventChannel.send(CaptureEvent.OtherPageWarned) }
+        }
         // The strip now shows another page, so a selection on it no longer applies.
         // Only a change from one page to another counts: the state starts with
         // no page, and its first page arriving after a long press would
@@ -253,6 +296,12 @@ class CaptureViewModel(
         shotActions.clear()
         val album = state.value.album ?: return
         viewModelScope.launch { withContext(io) { repo.setTargetPage(album.id, pageId) } }
+    }
+
+    /** Where a tap on the notice opens the review of [pageId]: its first photo with a box for one of its warnings, else its first (Requirement 3.2). */
+    suspend fun reviewIndexFor(pageId: String): Int = withContext(io) {
+        val ids = repo.shots(pageId).map { it.id }
+        (repo.observePageFeedback(pageId).first()?.warnings ?: emptyList()).reviewIndex(ids)
     }
 
     /** Back to the album's last page as the target, without creating a page (Requirement 4.8). */

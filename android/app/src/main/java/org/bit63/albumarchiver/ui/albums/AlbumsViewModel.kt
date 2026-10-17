@@ -19,7 +19,8 @@ import kotlin.coroutines.CoroutineContext
 /** How far an album has got to the server, as the drawer shows it (Requirement 8.7). */
 enum class UploadState(val label: String) { UPLOADED("uploaded"), UPLOADING("uploading"), WAITING("waiting") }
 
-data class AlbumRow(val summary: AlbumSummary, val upload: UploadState)
+/** [warnedPages]: how many of the album's pages have a red dot (single-shot glare spec, Requirement 4.1). */
+data class AlbumRow(val summary: AlbumSummary, val upload: UploadState, val warnedPages: Int = 0)
 
 fun uploadState(albumId: String, pendingOps: Int, running: Boolean, headAlbumId: String?): UploadState = when {
     pendingOps == 0 -> UploadState.UPLOADED
@@ -36,9 +37,9 @@ class AlbumsViewModel(
 ) : ViewModel() {
 
     val albums: StateFlow<List<AlbumRow>> = combine(
-        repo.observeSummaries(), uploadRunning, repo.observeQueueHeadAlbum(),
-    ) { summaries, running, head ->
-        summaries.map { AlbumRow(it, uploadState(it.id, it.pendingOps, running, head)) }
+        repo.observeSummaries(), uploadRunning, repo.observeQueueHeadAlbum(), repo.observeWarnedCounts(),
+    ) { summaries, running, head, warned ->
+        summaries.map { AlbumRow(it, uploadState(it.id, it.pendingOps, running, head), warned[it.id] ?: 0) }
     }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     /** Creates an album and makes it the current album (Requirement 2.3). */
