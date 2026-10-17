@@ -42,7 +42,7 @@ def test_sleeved_page_is_cropped_to_the_paper(sleeved):
     assert _err(res.corners_ref, case.corners_in(ref, "paper")).max() <= 0.0025
     paper_aspect = case.page.shape[1] / case.page.shape[0]
     assert res.report.aspect == pytest.approx(paper_aspect, rel=0.01)
-    assert res.report.schema_version == 4
+    assert res.report.schema_version == 5
     assert not [w for w in res.report.warnings if w["code"] == "paper_edge_uncertain"]
     assert res.sleeve.sleeved and set(res.mosaic_from_shot) == set(res.report.used)
 
