@@ -3,6 +3,7 @@
 Not installed with the package. Run from ``backend/``:
 
     python tools/real_glare_data.py PAGE_DIR... --out DIR
+    python tools/real_glare_data.py --album ~/.local/share/albumserver/albums/<id> --out DIR
 
 Each ``PAGE_DIR`` holds the shots of one page (``*.jpg``, as in ``real/``
 of the private photo-album-archiver-data repository). The page goes
@@ -21,6 +22,7 @@ between the two thresholds, are left unlabelled.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -173,22 +175,71 @@ def page_data(images: list[np.ndarray]) -> dict:
     )
 
 
+def album_pages(album: Path) -> list[tuple[str, Path]]:
+    """The page folders of a server album as (name, folder), named ``page-NN`` by the album's page number.
+
+    The number comes from the album's ``report.json`` when it has one;
+    folders it does not list (never processed) are named by their id.
+    """
+    photos = album / "photos"
+    numbers: dict[str, int] = {}
+    report = album / "report.json"
+    if report.is_file():
+        try:
+            for p in json.loads(report.read_text()).get("pages", []):
+                if isinstance(p, dict) and "id" in p and "number" in p:
+                    numbers[str(p["id"])] = int(p["number"])
+        except (ValueError, TypeError):
+            pass
+    out = []
+    for d in sorted(p for p in photos.iterdir() if p.is_dir()):
+        n = numbers.get(d.name)
+        out.append((f"page-{n:02d}" if n is not None else d.name, d))
+    return sorted(out, key=lambda t: (t[0].startswith("page-") is False, t[0]))
+
+
+def label_shares(labels: np.ndarray) -> dict:
+    """How much of the shots' area is labelled glare, clean or not at all, and how many shots there are."""
+    inside = labels.size
+    return {
+        "shots": int(labels.shape[0]),
+        "glare": round(float((labels == LABEL_GLARE).sum() / inside), 4),
+        "clean": round(float((labels == LABEL_CLEAN).sum() / inside), 4),
+        "unlabelled": round(float((labels == LABEL_UNKNOWN).sum() / inside), 4),
+    }
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("pages", nargs="+", type=Path)
+    ap.add_argument("pages", nargs="*", type=Path, help="page folders of shots")
+    ap.add_argument("--album", type=Path, help="a server album folder (with photos/ and report.json) to label in place of PAGE_DIRs")
     ap.add_argument("--out", type=Path, required=True)
     a = ap.parse_args()
+    if a.album:
+        pages = album_pages(a.album)
+    else:
+        pages = [(d.name, d) for d in a.pages]
+    if not pages:
+        ap.error("no pages given")
     a.out.mkdir(parents=True, exist_ok=True)
-    for d in a.pages:
-        dst = a.out / f"{d.name}.npz"
+    shares_path = a.out / "labels.json"
+    shares = json.loads(shares_path.read_text()) if shares_path.is_file() else {}
+    for name, d in pages:
+        dst = a.out / f"{name}.npz"
         if dst.exists():
-            print(d.name, "cached")
+            if name not in shares:
+                shares[name] = label_shares(np.load(dst)["labels"])
+            print(name, "cached")
             continue
         images = [cv2.imread(str(f)) for f in sorted(d.glob("*.jpg"))]
+        if not images:
+            print(name, "no photos", flush=True)
+            continue
         data = page_data(images)
         np.savez_compressed(dst, **data)
-        lab = data["labels"]
-        print(d.name, f"{len(data['used'])}/{len(images)} shots", f"glare {(lab == LABEL_GLARE).mean():.4f}", f"clean {(lab == LABEL_CLEAN).mean():.4f}", flush=True)
+        shares[name] = label_shares(data["labels"])
+        print(name, f"{len(data['used'])}/{len(images)} shots", f"glare {shares[name]['glare']:.4f}", f"clean {shares[name]['clean']:.4f}", flush=True)
+    shares_path.write_text(json.dumps(dict(sorted(shares.items())), indent=2) + "\n")
     return 0
 
 
