@@ -31,3 +31,8 @@ cancel_runs = false
 # The same limits as the app.
 max_pages = 500
 max_shots = 25
+
+# The single-photo glare detector for page runs: "features" (hand-made, the
+# default) or "net" (the learned one). It only changes which single-covered
+# areas the warnings say had glare seen, never the composed page.
+glare_detector = "features"

@@ -623,3 +623,33 @@ def test_status_carries_the_page_preview_and_each_shot_s_outline_by_id(api, work
     im = Image.open(io.BytesIO(r.content))
     assert im.size == (1500, 1000)
     assert (Path(run.out) / "preview.jpg").is_file()
+
+
+def test_the_configured_glare_detector_reaches_the_page_options(settings, client, monkeypatch):
+    import albumproc.album
+    from albumserver import worker as worker_mod
+
+    seen = []
+    monkeypatch.setattr(albumproc.album, "process_album", lambda work, out, options: seen.append(options))
+    for detector in ("features", "net"):
+        w = Worker(settings.model_copy(update={"glare_detector": detector}), client.store, client.layout)
+        w.runner.target("work", "out")  # what the child process runs
+        assert seen[-1].page.glare.detector == detector
+        assert seen[-1].page.glare.enabled
+    worker_mod.run_album_step("work", "out")
+    assert seen[-1].page.glare.detector == "features"
+
+
+def test_status_carries_glare_seen_unchanged(api, worker, runner, clock):
+    a = _album_with_shots(api, [new_id()])
+    clock.advance(30)
+    worker.step()
+    run = runner.runs[0]
+    seen = {"bbox": [0.6, 0, 1, 1], "location": "right", "shots": [1], "glare_seen": 0.31}
+    clean = {"bbox": [0, 0, 0.4, 1], "location": "left", "shots": [0], "glare_seen": 0.0}
+    run.finish(warnings=[{"code": "single_coverage", "fraction": 0.7, "locations": ["right", "left"], "regions": [seen, clean], "glare_seen_regions": 1, "message": "m"}])
+    worker.step()
+    (page,) = api.get(f"/albums/{a}/status").json()["pages"]
+    (sc,) = page["warnings"]
+    assert sc["glare_seen_regions"] == 1
+    assert [r["glare_seen"] for r in sc["regions"]] == [0.31, 0.0]

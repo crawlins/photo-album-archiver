@@ -22,6 +22,7 @@ deleting its folder.
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import multiprocessing
@@ -45,11 +46,13 @@ TRASH_DELAY_S = 30  # how long a replaced output folder is kept for requests alr
 ASSEMBLY_RETRY_S = 60
 
 
-def run_album_step(work: str, out: str) -> None:
-    """Child-process target: the album step on a one-page album folder."""
+def run_album_step(work: str, out: str, glare_detector: str = "features") -> None:
+    """Child-process target: the album step on a one-page album folder, with the configured glare detector."""
     from albumproc.album import AlbumOptions, process_album
+    from albumproc.glare import GlareParams
+    from albumproc.pipeline import PageOptions
 
-    process_album(work, out, AlbumOptions())
+    process_album(work, out, AlbumOptions(page=PageOptions(glare=GlareParams(detector=glare_detector))))
 
 
 class PageRun(Protocol):
@@ -185,7 +188,7 @@ class Worker:
         self.settings = settings
         self.store = store
         self.layout = layout
-        self.runner = runner or ProcessRunner()
+        self.runner = runner or ProcessRunner(functools.partial(run_album_step, glare_detector=settings.glare_detector))
         self.clock = clock
         self.active: dict[str, _Active] = {}
         self._trash: list[tuple[float, Path]] = []

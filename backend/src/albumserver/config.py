@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
-from typing import Mapping
+from typing import Literal, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
@@ -40,6 +40,10 @@ class Settings(BaseModel):
     cancel_runs: bool = False
     max_pages: int = Field(500, ge=1)
     max_shots: int = Field(25, ge=1)
+    # The single-photo glare detector of the server's page runs. It only
+    # changes the page warnings (which single-covered area had glare seen,
+    # and glare regions), never the composed page.
+    glare_detector: Literal["features", "net"] = "features"
 
     @model_validator(mode="after")
     def _check(self) -> "Settings":

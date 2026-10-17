@@ -84,3 +84,18 @@ def test_example_config_is_valid():
     example = Path(__file__).resolve().parents[1] / "deploy" / "albumserver.toml"
     s = load_settings(example, environ={})
     assert isinstance(s, Settings)
+
+
+def test_glare_detector_defaults_to_features_and_takes_net_only(tmp_path):
+    assert load_settings(None, environ={}).glare_detector == "features"
+    cfg = tmp_path / "albumserver.toml"
+    cfg.write_text('glare_detector = "net"\n')
+    assert load_settings(cfg, environ={}).glare_detector == "net"
+    assert load_settings(None, environ={"ALBUMSERVER_GLARE_DETECTOR": "net"}).glare_detector == "net"
+    with pytest.raises(SettingsError, match="glare_detector"):
+        load_settings(None, environ={"ALBUMSERVER_GLARE_DETECTOR": "best"})
+
+
+def test_the_deployed_configuration_loads():
+    deployed = Path(__file__).resolve().parents[1] / "deploy" / "albumserver.toml"
+    assert load_settings(deployed, environ={}).glare_detector in ("features", "net")
