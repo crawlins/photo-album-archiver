@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
@@ -150,8 +151,11 @@ class CaptureViewModel(
         // Page feedback from the server while this screen lives (Requirement 4.1).
         feedback?.start(viewModelScope, album.map { it?.id }, uploadRunning)
         // The strip now shows another page, so a selection on it no longer applies.
+        // Only a change from one page to another counts: the state starts with
+        // no page, and its first page arriving after a long press would
+        // otherwise clear that press's selection and menu.
         viewModelScope.launch {
-            state.map { it.page?.id }.distinctUntilChanged().drop(1).collect { shotActions.clear() }
+            state.map { it.page?.id }.filterNotNull().distinctUntilChanged().drop(1).collect { shotActions.clear() }
         }
     }
 
