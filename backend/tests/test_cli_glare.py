@@ -26,7 +26,7 @@ def page(tmp_path_factory):
 def test_page_writes_metadata_next_to_the_image(page, capsys):
     _, _, out, d = page
     meta = json.loads(out.with_suffix(".json").read_text())
-    assert meta["schema_version"] == 4
+    assert meta["schema_version"] == 5
     assert {"glare", "uncovered", "warnings", "detector", "coverage", "glare_fraction", "inputs"} <= set(meta)
     assert all(isinstance(k, str) for k in meta["glare"]["per_shot"])
     assert not list(out.parent.glob("*.tmp"))
@@ -55,10 +55,10 @@ def test_masks_are_page_sized(page):
 def test_report_path_and_stdout(page, tmp_path, capsys):
     _, shots, _, _ = page
     out, meta = tmp_path / "p.png", tmp_path / "meta" / "page-report.json"
-    assert main(["page", *map(str, shots), "-o", str(out), "--report", str(meta), "--glare-threshold", "0.6", "--min-region", "0.001"]) == 0
+    assert main(["page", *map(str, shots), "-o", str(out), "--report", str(meta), "--glare-threshold", "0.6", "--min-region", "0.001", "--glare-seen", "0.05"]) == 0
     printed = json.loads(capsys.readouterr().out)
     assert json.loads(meta.read_text()) == printed
-    assert printed["detector"]["quality"] == {"residual_threshold": 0.6, "min_region_area": 0.001, "min_single_area": 0.01}
+    assert printed["detector"]["quality"] == {"residual_threshold": 0.6, "min_region_area": 0.001, "min_single_area": 0.01, "glare_seen": 0.05}
     assert not (tmp_path / "p.json").exists()
     assert not (tmp_path / "p.glare.png").exists()  # masks only when asked
 

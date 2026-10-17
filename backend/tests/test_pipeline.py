@@ -122,7 +122,7 @@ def sleeve_stitch():
 def test_glare_left_in_a_stitched_page_is_reported(sleeve_stitch):
     case, res, _, _, _ = sleeve_stitch
     r = res.report
-    assert r.schema_version == 4
+    assert r.schema_version == 5
     (w,) = [w for w in r.warnings if w["code"] == "glare"]
     assert w["single_shot"] >= 1 and w["single_shot"] + w["all_shots_glared"] == len(w["regions"])
     assert any(g["cause"] == "single_shot" for g in r.glare["regions"])
@@ -160,6 +160,35 @@ def test_glare_left_in_a_stitched_page_is_reported(sleeve_stitch):
     real, clean = truth > 0.5, truth < 0.01
     assert (found & clean).sum() / clean.sum() <= 0.002
     assert (found & real).sum() / real.sum() >= 0.02
+
+
+def test_glare_seen_is_given_with_the_detector_on_and_omitted_with_it_off(sleeve_stitch):
+    _, on, off, _, _ = sleeve_stitch
+    regions = on.report.single_coverage["regions"]
+    assert len(regions) == 2 and all(0.0 <= r["glare_seen"] <= 1.0 for r in regions)
+    assert on.report.detector["quality"]["glare_seen"] == 0.02
+    (w,) = [w for w in on.report.warnings if w["code"] == "single_coverage"]
+    assert w["glare_seen_regions"] == sum(r["glare_seen"] >= 0.02 for r in regions)
+    assert [r["glare_seen"] for r in w["regions"]] == [r["glare_seen"] for r in regions]
+    # With the detector off nobody looked: no field rather than 0.
+    assert all("glare_seen" not in r for r in off.report.single_coverage["regions"])
+    (w,) = [w for w in off.report.warnings if w["code"] == "single_coverage"]
+    assert "glare_seen_regions" not in w
+
+
+def test_glare_seen_marks_the_glared_half_of_a_stitch():
+    # The left shot has five times the glare of the right one. The features
+    # detector sees under 2% of the single-shot glare on every synthetic
+    # stitch tried (seeds 40 to 52, sleeve and spot glare), so this uses
+    # the net, which sees it on the glared half only.
+    case = make_case(40, "stitch", 2)
+    assert case.shots[0].glare_mask.mean() > 4 * case.shots[1].glare_mask.mean()
+    r = process_page(case.images, PageOptions(glare=GlareParams(detector="net"))).report
+    by_shot = {g["shots"][0]: g for g in r.single_coverage["regions"]}
+    assert by_shot[0]["glare_seen"] >= 0.02 > by_shot[1]["glare_seen"]
+    (w,) = [w for w in r.warnings if w["code"] == "single_coverage"]
+    assert w["glare_seen_regions"] == 1
+    assert w["message"].startswith(f"Only one photo covers the {by_shot[0]['location']} edge, and glare was seen there")
 
 
 def test_detector_leaves_the_page_image_unchanged_and_costs_little(sleeve_stitch):

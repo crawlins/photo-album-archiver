@@ -321,3 +321,70 @@ def test_shadow_warning_comes_after_glare_and_only_with_regions():
     w = page_warnings(_g("single_shot"), NONE, [], None, _sh("single_shot"))
     assert [x["code"] for x in w] == ["glare", "shadow"]
     assert page_warnings({"fraction": 0.0, "per_shot": {}, "regions": []}, NONE, [], None, {"fraction": 0.0, "per_shot": {}, "regions": []}) == []
+
+
+def test_glare_seen_is_the_share_of_each_single_region_seen_as_glare():
+    left, right = _mask((0, 0, 120, 100)), _mask((80, 0, 200, 100))
+    count = left.astype(np.uint8) + right
+    residual = np.zeros(GRID, np.float32)
+    residual[0:50, 160:200] = 0.9  # a quarter of the right-only part (x 120..200)
+    residual[0:100, 0:10] = 0.4  # below the residual threshold
+    regions = single_coverage_regions(count, [3, 5], [left, right], PAGE, QualityParams(), residual)
+    by_shot = {r.shots[0]: r for r in regions}
+    assert by_shot[5].glare_seen == 0.25
+    assert by_shot[3].glare_seen == 0.0
+    assert by_shot[5].to_dict()["glare_seen"] == 0.25
+    # A lower residual threshold counts the faint band too.
+    low = single_coverage_regions(count, [3, 5], [left, right], PAGE, QualityParams(residual_threshold=0.3), residual)
+    assert {r.shots[0]: r.glare_seen for r in low}[3] == 0.125
+
+
+def test_glare_seen_is_omitted_when_nobody_looked():
+    left, right = _mask((0, 0, 120, 100)), _mask((80, 0, 200, 100))
+    regions = single_coverage_regions(left.astype(np.uint8) + right, [0, 1], [left, right], PAGE, QualityParams())
+    assert regions and all(r.glare_seen is None and "glare_seen" not in r.to_dict() for r in regions)
+    single = {"fraction": 0.8, "regions": [r.to_dict() for r in regions]}
+    (w,) = page_warnings({"fraction": 0.0, "per_shot": {}, "regions": []}, NONE, [], single)
+    assert "glare_seen_regions" not in w
+    assert all("glare_seen" not in r for r in w["regions"])
+
+
+def test_single_coverage_warning_names_the_region_with_glare_seen_first():
+    single = {
+        "fraction": 0.62,
+        "regions": [
+            {"location": "left", "edges": ["left"], "area": 0.35, "glare_seen": 0.01},
+            {"location": "right", "edges": ["right"], "area": 0.27, "glare_seen": 0.3},
+        ],
+    }
+    (w,) = page_warnings({"fraction": 0.0, "per_shot": {}, "regions": []}, NONE, [], single)
+    assert w["glare_seen_regions"] == 1
+    # The regions keep their order by area, and carry what the app draws with.
+    assert w["locations"] == ["left", "right"] and [r["glare_seen"] for r in w["regions"]] == [0.01, 0.3]
+    assert w["message"] == (
+        "Only one photo covers the right edge, and glare was seen there (27.0% of the page)."
+        " 1 other area is in one photo only too (62.0% of the page in all)."
+        " Take another shot of each from a different angle, starting with the right edge, so that glare there can be removed."
+    )
+    # At a higher glare-seen threshold neither counts, and the message is the plain one.
+    (w,) = page_warnings({"fraction": 0.0, "per_shot": {}, "regions": []}, NONE, [], single, glare_seen=0.5)
+    assert w["glare_seen_regions"] == 0
+    assert w["message"].startswith("Only one photo covers the left edge and 1 other area (62.0% of the page).")
+    # One region, glare seen.
+    one = {"fraction": 0.31, "regions": [{"location": "top", "edges": ["top"], "area": 0.31, "glare_seen": 0.02}]}
+    (w,) = page_warnings({"fraction": 0.0, "per_shot": {}, "regions": []}, NONE, [], one)
+    assert w["glare_seen_regions"] == 1
+    assert w["message"] == (
+        "Only one photo covers the top edge, and glare was seen there (31.0% of the page)."
+        " Take another shot of that part from a different angle so that the glare can be removed."
+    )
+
+
+def test_single_coverage_warning_is_raised_with_no_glare_seen():
+    single = {"fraction": 0.5, "regions": [{"location": "left", "edges": ["left"], "area": 0.5, "glare_seen": 0.0}]}
+    (w,) = page_warnings({"fraction": 0.0, "per_shot": {}, "regions": []}, NONE, [], single)
+    assert w["code"] == "single_coverage" and w["glare_seen_regions"] == 0
+    assert w["message"] == (
+        "Only one photo covers the left edge (50.0% of the page)."
+        " Take another shot of that part from a different angle so that glare there can be removed."
+    )

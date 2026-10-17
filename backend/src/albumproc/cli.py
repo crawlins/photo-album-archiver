@@ -69,7 +69,7 @@ def _cmd_page(a) -> int:
         focal_35mm=a.focal_35mm or None,
         fuse=FuseParams(shadow=ShadowParams(enabled=a.shadow)),
         glare=GlareParams(detector=a.detector),
-        quality=QualityParams(residual_threshold=a.glare_threshold, min_region_area=a.min_region, min_single_area=a.min_single_area),
+        quality=QualityParams(residual_threshold=a.glare_threshold, min_region_area=a.min_region, min_single_area=a.min_single_area, glare_seen=a.glare_seen),
         curvature=_curvature_params(a),
         sleeve=_sleeve_params(a),
     )
@@ -301,6 +301,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--detector", choices=["features", "net"], default="features", help="single-photo glare detector: hand-made features (default) or the learned model")
     p.add_argument("--min-region", type=float, default=0.0005, help="smallest region reported, as a fraction of the page")
     p.add_argument("--min-single-area", type=float, default=0.01, help="smallest single-covered area warned about, as a fraction of the page")
+    p.add_argument("--glare-seen", type=float, default=0.02, help="share of a single-covered area seen as glare at which the warning names it first (0-1)")
     p.add_argument("--max-side", type=int, default=8000, help="cap on output long side (px)")
     p.add_argument("--focal-35mm", type=float, default=26.0, help="35 mm-equivalent focal length of the camera (0 = estimate)")
     curvature_args(p)

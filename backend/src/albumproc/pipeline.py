@@ -18,7 +18,7 @@ from .shadow import grow, single_shadow
 from .register import register
 from .sleeve import SleeveFit, SleeveParams, debug_image as sleeve_debug_image, find_sleeve
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 PREVIEW_MAX_SIDE = 3000
 MAP_STEP = 8  # flattening maps of curved pages are computed every this many output px
@@ -521,7 +521,7 @@ def _assess(result, used: list[int], dropped: list[int], size: tuple[int, int], 
     }
     single = {
         "fraction": round(float((count[covered] == 1).mean()) if covered.any() else 0.0, 4),
-        "regions": boxed(single_coverage_regions(count, used, masks, size, q)),
+        "regions": boxed(single_coverage_regions(count, used, masks, size, q, res if gp.enabled else None)),
     }
     sp = opt.fuse.shadow
     if sp.enabled and result.shadow_raw_small is not None:
@@ -557,7 +557,7 @@ def _assess(result, used: list[int], dropped: list[int], size: tuple[int, int], 
     }
     outlines = {i: shot_outline(m) for i, m in zip(used, masks)}
     detector = {"bias": round(float(bias), 4), "bias_adapted": adapted, "glare": asdict(gp), "shadow": asdict(sp), "quality": asdict(q)}
-    warnings = page_warnings(glare, uncovered, dropped, single, shadow)
+    warnings = page_warnings(glare, uncovered, dropped, single, shadow, q.glare_seen)
     return _Quality(glare, uncovered, single, outlines, warnings, detector, res, maps, shadow, res_sh, sh_maps)
 
 
