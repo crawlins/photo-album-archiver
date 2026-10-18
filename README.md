@@ -129,9 +129,14 @@ often the one taken next, from about the same angle, and does worse than
 one taken from elsewhere. With the area then covered twice the prompt goes
 away, and no detector reports what is left.
 No glare was found in single coverage outside every warned area. So two
-shots over every part of a page do not by themselves remove the glare;
-the single-shot glare spec stops there until its design is revisited
-(`.kiro/specs/single-shot-glare/tasks.md`).
+shots over every part of a page do not by themselves remove the glare:
+they do when the page is stitched from shots aimed at different parts of
+it, and that is what the project relies on. **Aim each shot at a different
+part of the page**, and take a prompted shot aimed at the outlined part; a
+second whole-page shot from the same place clears the warning but not the
+glare. The stitch result rests on 3 replays of one page, since the glare
+album was mostly shot whole; the first album shot with the app is the
+check (`.kiro/specs/single-shot-glare/tasks.md`).
 
 Known limit: the single-photo detector is cautious. Faint sleeve sheen looks
 much like pale print content, white borders and white paper in one photo, so
@@ -274,7 +279,14 @@ and uploads the shots to the server. All image work happens on the backend.
 - **Pages that need another shot.** With a server set, a page whose last run
   found glare or part of the page in one photo only gets a red dot, and its
   photos show the area outlined: solid where glare was seen there, dashed
-  where none was (which is not proof there is none).
+  where none was (which is not proof there is none). While you shoot, a line
+  above the thumbnails names the lowest-numbered other page that needs a
+  shot ("Page 3 needs another shot, and 2 more"), with one short vibration
+  when a page first needs one; tap it to open that page's photo with the
+  area. The album list shows how many pages of each album need a shot, and
+  switching album, starting a new one or opening the server albums asks
+  first ("Stay" opens the page overview, "Leave anyway" goes on) while the
+  album has such pages or pages still being checked.
 
 ### Build and install
 
@@ -363,7 +375,8 @@ Settings come from a TOML file (`--config`, see
 setting stops the server, naming it. The main ones: `data_dir`, `host`
 (`127.0.0.1`), `port` (8080), `tls_cert`/`tls_key`, `idle_period_s` (10),
 `workers` (1 page run at a time; each can use 1 to 2 GB), `cancel_runs`
-(false).
+(false), `glare_detector` (`features` by default, `net` in the deployed
+file; it changes only the page warnings, never the composed page).
 
 **Limits.** A page holds at most 25 shots and an album at most 500 pages, the
 same as the app. A shot beyond either gets 422, as does album metadata

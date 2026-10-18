@@ -96,6 +96,7 @@ def test_glare_detector_defaults_to_features_and_takes_net_only(tmp_path):
         load_settings(None, environ={"ALBUMSERVER_GLARE_DETECTOR": "best"})
 
 
-def test_the_deployed_configuration_loads():
+def test_the_deployed_server_uses_the_learned_detector():
+    # Single-shot glare spec, task 3.2: the replay met Requirement 5.3 for net.
     deployed = Path(__file__).resolve().parents[1] / "deploy" / "albumserver.toml"
-    assert load_settings(deployed, environ={}).glare_detector in ("features", "net")
+    assert load_settings(deployed, environ={}).glare_detector == "net"
