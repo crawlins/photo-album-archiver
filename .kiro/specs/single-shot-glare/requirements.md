@@ -108,6 +108,10 @@ choice between prompts and training rests on numbers rather than on a guess.
    single coverage outside every warned region, THE remaining tasks of this
    spec SHALL stop until the design is revisited, because the prompts would
    then not be a sufficient guarantee.
+8. AFTER the revisit of 2026-10-18 (Clark: rest the guarantee on stitched
+   pages; design, "Revisit: stitched pages"), Requirement 1.7 SHALL be read
+   on the replays that start from a stitch pair; the one-photo starts SHALL
+   still be reported, as the case the guarantee does not cover.
 
 ### Requirement 2: Glare seen in single coverage
 

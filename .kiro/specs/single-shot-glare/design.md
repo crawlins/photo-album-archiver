@@ -137,6 +137,34 @@ baseline and its evaluation harness) and Requirement 6 still apply,
 Requirements 3 and 4 are deferred, and `tasks.md` lists the tasks that
 replace them.
 
+### Revisit: stitched pages (2026-10-18)
+
+The replay (`tasks.md` notes) failed Requirement 1.7 overall: two prompted
+shots removed 55% of the single-shot glare. Split by how the page was first
+shot, the two cases differ:
+
+- **A page stitched from shots aimed at different parts** (each shot adding
+  at least a fifth of the page the other does not): 93% removed after two
+  prompted shots, 92% with the least covering prompted shot.
+- **A page shot once, whole**: 54%. The prompted shot covering most of the
+  page is then another whole-page shot, usually from about the same place,
+  with its glare in about the same place; the warning clears and the glare
+  stays.
+
+Clark chose to rest the guarantee on stitched pages: a page is shot as a
+stitch of shots aimed at different parts of it, and the prompts then ask
+for the parts only one shot covers. The gate is read on the stitch starts
+(Requirement 1.8), which meet it, and tasks 3 to 5 go ahead. Two things
+qualify that:
+
+- The stitch evidence is 3 replays of one page, because the glare album
+  was mostly shot whole. The first real album shot with the app (remaining
+  tasks, item 1) is the check; the replay runs on it unchanged.
+- A page shot once, whole, keeps its `single_coverage` warning, which is
+  what makes the user stitch it, but a second whole-page shot from the same
+  place clears the warning without removing the glare. The README says to
+  aim each shot at a different part of the page.
+
 ## Key decisions
 
 ### Truth from all the shots, not hand-drawn masks

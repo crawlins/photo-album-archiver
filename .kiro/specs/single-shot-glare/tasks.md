@@ -38,40 +38,40 @@ Real photos, crops, masks and labels stay in
     the page view; parsing and styling tests.
     - _Requirements: 2.7, 2.8, 7.3_
 
-- [ ] 3. Detector for the server's runs
-  - [ ] 3.1 `Settings.glare_detector` (default `features`) passed through
+- [x] 3. Detector for the server's runs
+  - [x] 3.1 `Settings.glare_detector` (default `features`) passed through
     the worker into `AlbumOptions`; a test that the configured detector
     reaches the page options and the status carries `glare_seen`.
     - _Requirements: 2.7, 5.1_
-  - [ ] 3.2 If task 1.3's numbers meet Requirement 5.3, set
+  - [x] 3.2 If task 1.3's numbers meet Requirement 5.3, set
     `glare_detector = "net"` in `deploy/albumserver.toml` and say why in
     the commit; otherwise leave it and record why here.
     - _Requirements: 5.3_
 
-- [ ] 4. Other pages flagged on the capture screen
-  - [ ] 4.1 `CaptureViewModel.otherWarned` and the vibrate-once set.
+- [x] 4. Other pages flagged on the capture screen
+  - [x] 4.1 `CaptureViewModel.otherWarned` and the vibrate-once set.
     - _Requirements: 3.1, 3.3, 3.5, 3.6_
-  - [ ] 4.2 `OtherPageNotice` on the capture screen, its tap through the
+  - [x] 4.2 `OtherPageNotice` on the capture screen, its tap through the
     helper shared with the page overview's tile tap.
     - _Requirements: 3.1, 3.2, 3.4_
-  - [ ] 4.3 View model tests and one emulator test with a fake server
+  - [x] 4.3 View model tests and one emulator test with a fake server
     warning an earlier page.
     - _Requirements: 3.1 to 3.6_
 
-- [ ] 5. Leaving an album with work left
-  - [ ] 5.1 Warned-page counts in the album drawer.
+- [x] 5. Leaving an album with work left
+  - [x] 5.1 Warned-page counts in the album drawer.
     - _Requirements: 4.1_
-  - [ ] 5.2 `LeaveAlbumGuard` on album switch, new album and the server
+  - [x] 5.2 `LeaveAlbumGuard` on album switch, new album and the server
     album list; "Stay" opens the page overview; polling while open.
     - _Requirements: 4.2 to 4.5_
-  - [ ] 5.3 Unit tests for when it asks and what each answer does.
+  - [x] 5.3 Unit tests for when it asks and what each answer does.
     - _Requirements: 4.2 to 4.5_
 
 - [ ] 6. Records
   - [x] 6.1 `TODO.md` entry to revisit training once a full album has
     been shot (added with this spec).
     - _Requirements: 6.1, 6.2_
-  - [ ] 6.2 README: the notice, the leave question, `glare_seen`, and the
+  - [x] 6.2 README: the notice, the leave question, `glare_seen`, and the
     replay numbers from task 1.3.
     - _Requirements: 1.6_
 
@@ -129,7 +129,13 @@ angle, with its glare in about the same place. A less fully covering shot
 (the worst rule) removes more. The stitch pairs, whose two shots point at
 different halves, did meet the bar, but they are 3 replays of one page.
 
-Things for the revisit, not decided here:
+**Revisit, 2026-10-18: stitched pages.** Clark chose to rest the guarantee
+on pages stitched from shots aimed at different parts (design, "Revisit:
+stitched pages"). Read on the stitch starts, the gate is met (93% removed,
+0% unwarned; Requirement 1.8), so tasks 3 to 5 go ahead, with the first
+real album shot with the app as the check on 3 replays of one page.
+
+Points raised before the revisit, kept for that check:
 
 - The guarantee may need "two shots whose glare does not coincide" rather
   than "two shots": a shot from a clearly different angle (the prompt says
@@ -138,9 +144,6 @@ Things for the revisit, not decided here:
 - The glare album was not shot under the overlap guarantee, so the
   prompted shot here is picked from shots taken for other reasons; a real
   album shot with the app's prompts is the better test.
-- Requirement 5.3's conditions hold for `net` (no clean flagged region,
-  more single-shot glare flagged than `features`), but task 3.2 is behind
-  the gate.
 
 Departures from the design in the tool: one-photo starts besides stitch
 pairs (only 4 stitch pairs exist on the 19 pages); each composition is laid
@@ -150,8 +153,17 @@ when one photo gave another outline at another scale); compositions of
 another outline are skipped; a stitch pair's shots must each add at least
 a fifth of the page.
 
-Tasks 3.1, 4 and 5 were written before the gate's result was known; they
-are not in this change, and are kept as one commit on a local branch,
-`claude/project-thread-7z8vag-prompts`, for if the revisit keeps them. Task 2.2's pipeline test uses the `net`
+Tasks 3.1, 4 and 5 were written before the gate's result was known, held
+back when it failed, and added after the revisit unchanged.
+
+Task 3.2: Requirement 5.3 holds for `net` on these replays (5 regions met
+the glare-seen threshold, none without truth glare, holding 45% of the
+single-shot glare area, against none for `features`; on the stitch starts
+alone, 1 region and 3.5%), so `deploy/albumserver.toml` sets
+`glare_detector = "net"`. The evidence is thin, five regions, and the
+setting is one line to change back. `albumproc page` keeps `features`.
+
+Task 4.3's emulator test runs in CI; on this machine the emulator run
+failed in setup (WorkManager not initialised) for the existing tests too. Task 2.2's pipeline test uses the `net`
 detector: `features` sees under 2% of either half of every synthetic
 two-shot stitch tried, sleeve or spot glare.
