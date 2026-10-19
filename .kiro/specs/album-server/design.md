@@ -186,7 +186,7 @@ All under `backend/src/albumserver/`.
 
 | Module | Contents |
 | --- | --- |
-| `config.py` | `Settings` (Pydantic settings): `data_dir`, `host` (`127.0.0.1`), `port` (8080), `tls_cert`, `tls_key`, `max_body_mb` (50), `idle_period_s` (30), `workers` (1), `cancel_runs` (false), `max_pages` (500), `max_shots` (25); TOML file plus `ALBUMSERVER_` env vars; unknown keys rejected |
+| `config.py` | `Settings` (Pydantic settings): `data_dir`, `host` (`127.0.0.1`), `port` (8080), `tls_cert`, `tls_key`, `max_body_mb` (1024), `idle_period_s` (30), `workers` (1), `cancel_runs` (false), `max_pages` (500), `max_shots` (25); TOML file plus `ALBUMSERVER_` env vars; unknown keys rejected |
 | `store.py` | `Store`: SQLite schema and migrations, all reads and transactional writes, limit checks, token hashes, page states |
 | `files.py` | paths under the data folder, temp-then-rename writes with fsync, streaming hash, startup cleanup, `check` |
 | `auth.py` | token generation, hashing, FastAPI dependency doing a constant-time (`hmac.compare_digest`) lookup and recording last use |

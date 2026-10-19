@@ -34,7 +34,7 @@ class Settings(BaseModel):
     port: int = Field(8080, ge=0, le=65535)
     tls_cert: Path | None = None
     tls_key: Path | None = None
-    max_body_mb: float = Field(50, gt=0)
+    max_body_mb: float = Field(1024, gt=0)  # room for flatbed scans at high resolution
     idle_period_s: float = Field(10, ge=0)  # short, so a page's feedback reaches the phone while the user is still at it
     workers: int = Field(1, ge=1)
     cancel_runs: bool = False

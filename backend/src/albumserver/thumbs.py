@@ -8,6 +8,8 @@ from pathlib import Path
 
 from PIL import Image, ImageOps
 
+from albumproc import scanmark  # noqa: F401 - sets Pillow's pixel limit to the page step's (MAX_PIXELS)
+
 from .files import write_atomic
 
 THUMB_SIZE = 320

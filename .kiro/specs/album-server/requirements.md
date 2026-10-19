@@ -68,7 +68,7 @@ network, so that photos and tokens are not exposed by accident.
    server SHALL log a warning at startup that tokens and photos travel
    unencrypted.
 4. THE server SHALL reject request bodies larger than the configured maximum
-   (50 MB by default) with 413 before reading them in full.
+   (1 GB by default; 50 MB before the scanner capture spec, whose scans are much larger than photos) with 413 before reading them in full.
 
 ### Requirement 3: Album metadata
 

@@ -14,8 +14,9 @@ port = 8080
 # tls_cert = "/etc/albumserver/cert.pem"
 # tls_key = "/etc/albumserver/key.pem"
 
-# Largest request body accepted, in MB.
-max_body_mb = 50
+# Largest request body accepted, in MB. Phone shots are a few MB; a scan at
+# 2400 dpi can be a few hundred.
+max_body_mb = 1024
 
 # A page is processed once it has had no new or deleted shot for this long,
 # or at once when the app moves on to a later page.
