@@ -122,7 +122,7 @@ def sleeve_stitch():
 def test_glare_left_in_a_stitched_page_is_reported(sleeve_stitch):
     case, res, _, _, _ = sleeve_stitch
     r = res.report
-    assert r.schema_version == 5
+    assert r.schema_version == 6
     (w,) = [w for w in r.warnings if w["code"] == "glare"]
     assert w["single_shot"] >= 1 and w["single_shot"] + w["all_shots_glared"] == len(w["regions"])
     assert any(g["cause"] == "single_shot" for g in r.glare["regions"])

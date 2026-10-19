@@ -80,7 +80,7 @@ def test_album_outputs(first_run):
         assert p["page_report"]["coverage"] > 0.99
         assert 100 < p["capture_dpi"] < 150
         assert {w["code"] for w in p["warnings"]} == {"upsampled", "low_resolution"}
-        assert p["page_report"]["schema_version"] == 5 and p["page_report"]["single_coverage"]["regions"] == []
+        assert p["page_report"]["schema_version"] == 6 and p["page_report"]["single_coverage"]["regions"] == []
         assert p["process_key"].startswith("sha256:") and p["print_key"] != p["process_key"]
     with pikepdf.open(out / "album.pdf") as pdf:
         assert len(pdf.pages) == 3

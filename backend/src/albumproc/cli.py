@@ -15,7 +15,7 @@ import json
 import os
 import re
 import sys
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import cv2
@@ -73,6 +73,13 @@ def _cmd_page(a) -> int:
         curvature=_curvature_params(a),
         sleeve=_sleeve_params(a),
     )
+    if a.source == "auto":
+        from .scanmark import page_source
+
+        source, dpi = page_source(a.photos)
+    else:
+        source, dpi = a.source, None
+    opt = replace(opt, source=source, scan_dpi=dpi)
     res = process_page(images, opt, debug_dir=a.debug)
     a.output.parent.mkdir(parents=True, exist_ok=True)
     report = res.report.to_dict()
@@ -304,6 +311,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--glare-seen", type=float, default=0.02, help="share of a single-covered area seen as glare at which the warning names it first (0-1)")
     p.add_argument("--max-side", type=int, default=8000, help="cap on output long side (px)")
     p.add_argument("--focal-35mm", type=float, default=26.0, help="35 mm-equivalent focal length of the camera (0 = estimate)")
+    p.add_argument("--source", choices=("auto", "photo", "scan"), default="auto", help="process the photos as photos or as flatbed scans (auto: scans when every one carries albumscan's EXIF mark)")
     curvature_args(p)
     p.set_defaults(func=_cmd_page)
 

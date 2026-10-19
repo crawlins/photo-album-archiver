@@ -18,7 +18,7 @@ from .shadow import grow, single_shadow
 from .register import register
 from .sleeve import SleeveFit, SleeveParams, debug_image as sleeve_debug_image, find_sleeve
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 PREVIEW_MAX_SIDE = 3000
 MAP_STEP = 8  # flattening maps of curved pages are computed every this many output px
@@ -39,6 +39,25 @@ class PageOptions:
     quality: QualityParams = field(default_factory=QualityParams)
     curvature: CurvatureParams = field(default_factory=CurvatureParams)
     sleeve: SleeveParams = field(default_factory=SleeveParams)
+    # "photo", or "scan" for flatbed scans (see scanmark.py): proportions are
+    # taken from the outline as it is, the page is never bent, and glare,
+    # shadow and single coverage are not looked for, since a scanner's light
+    # moves with its sensor and another angle cannot be had.
+    source: str = "photo"
+    scan_dpi: float | None = None  # the scans' resolution, for the report
+
+    def for_source(self) -> "PageOptions":
+        """These options with what scan mode turns off turned off."""
+        if self.source not in ("photo", "scan"):
+            raise ValueError(f"source must be photo or scan, not {self.source!r}")
+        if self.source == "photo":
+            return self
+        return replace(
+            self,
+            glare=replace(self.glare, enabled=False),
+            curvature=replace(self.curvature, mode="off"),
+            fuse=replace(self.fuse, shadow=replace(self.fuse.shadow, enabled=False)),
+        )
 
 
 @dataclass
@@ -65,6 +84,8 @@ class PageReport:
     detector: dict = field(default_factory=dict)  # glare, shadow and quality parameters, bias used
     curvature: dict = field(default_factory=dict)  # see _curvature_report
     sleeve: dict = field(default_factory=dict)  # see SleeveFit.report
+    source: str = "photo"
+    scan_dpi: float | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -152,7 +173,8 @@ def _neighbour_side(pool: list, chosen: PageQuad) -> str | None:
 
 
 def process_page(images: list[np.ndarray], options: PageOptions | None = None, debug_dir: str | Path | None = None) -> PageResult:
-    opt = options or PageOptions()
+    opt = (options or PageOptions()).for_source()
+    scan = opt.source == "scan"
     reg = register(images)
     used = reg.registered
     ref = reg.reference
@@ -205,7 +227,11 @@ def process_page(images: list[np.ndarray], options: PageOptions | None = None, d
     # 2. Output rectangle: true aspect ratio, native resolution, capped.
     rh, rw = images[ref].shape[:2]
     focal = focal_px_from_35mm(opt.focal_35mm, rw, rh) if opt.focal_35mm else None
-    aspect = estimate_aspect(corners_ref, (rw / 2, rh / 2), focal)
+    if scan:  # no perspective: the outline's own proportions
+        tl, tr, br, bl = corners_ref
+        aspect = float((np.linalg.norm(tr - tl) + np.linalg.norm(br - bl)) / (np.linalg.norm(bl - tl) + np.linalg.norm(br - tr)))
+    else:
+        aspect = estimate_aspect(corners_ref, (rw / 2, rh / 2), focal)
     cp = opt.curvature
     cp.validate()
     fit = None
@@ -291,6 +317,8 @@ def process_page(images: list[np.ndarray], options: PageOptions | None = None, d
         mappers = [_map_mapper(m, MAP_STEP) for m in maps]
 
     single_full = np.sum([m.astype(np.uint8) for m in out_m], axis=0) == 1
+    if scan:
+        single_full[:] = False
     del out_w
     quality = _assess(result, used, reg.dropped, (W, H), opt, mappers, [images[i].shape[1::-1] for i in used])
     report = PageReport(
@@ -320,6 +348,7 @@ def process_page(images: list[np.ndarray], options: PageOptions | None = None, d
     report.curvature = _curvature_report(cp, fit, surface, aspect_planar if surface is not None else aspect, used, alignments, steep)
     report.warnings += _curvature_warnings(cp, fit, steep)
     report.sleeve = sleeve.report()
+    report.source, report.scan_dpi = opt.source, opt.scan_dpi
     report.warnings += _sleeve_warnings(sleeve)
 
     if debug_dir is not None:
@@ -519,10 +548,13 @@ def _assess(result, used: list[int], dropped: list[int], size: tuple[int, int], 
         "fraction": round(1.0 - float(result.coverage.mean()), 4),
         "regions": boxed(uncovered_regions(result.coverage, size, q, grid)),
     }
-    single = {
-        "fraction": round(float((count[covered] == 1).mean()) if covered.any() else 0.0, 4),
-        "regions": boxed(single_coverage_regions(count, used, masks, size, q, res if gp.enabled else None)),
-    }
+    if opt.source == "scan":  # another scan cannot see an area from another angle
+        single = {"fraction": 0.0, "regions": []}
+    else:
+        single = {
+            "fraction": round(float((count[covered] == 1).mean()) if covered.any() else 0.0, 4),
+            "regions": boxed(single_coverage_regions(count, used, masks, size, q, res if gp.enabled else None)),
+        }
     sp = opt.fuse.shadow
     if sp.enabled and result.shadow_raw_small is not None:
         # Each shot's shadow: what comparison found (whether or not fusion
