@@ -23,3 +23,24 @@ jobs:
           cache-dependency-path: backend/pyproject.toml
       - run: python -m pip install -e '.[test]'
       - run: python -m pytest -q
+
+  scanner:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: |
+            backend/pyproject.toml
+            scanner/pyproject.toml
+      # SANE's test scanner for the real-scanimage test; the window (GTK) is not tested here.
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends sane-utils
+      # The backend too, for the end-to-end test against a real albumserver.
+      - run: python -m pip install -e backend -e 'scanner[test]'
+      - run: ALBUMSCAN_TEST_ALBUMSERVER="$(command -v albumserver)" python -m pytest -q
+        working-directory: scanner

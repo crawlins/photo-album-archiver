@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "albumscan"
+version = "0.1.0"
+description = "Scan photo-album pages on a SANE flatbed and upload them to the album server"
+requires-python = ">=3.10"
+# GTK 4 comes from the distribution's PyGObject (python3-gi, gir1.2-gtk-4.0),
+# which cannot sensibly be installed with pip; SANE's scanimage from sane-utils.
+dependencies = ["Pillow>=10"]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[project.scripts]
+albumscan = "albumscan.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
