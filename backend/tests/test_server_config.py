@@ -11,8 +11,8 @@ def test_defaults():
     s = load_settings(None, environ={})
     assert s.host == "127.0.0.1"
     assert s.port == 8080
-    assert s.max_body_mb == 50
-    assert s.max_body_bytes == 50 * 1024 * 1024
+    assert s.max_body_mb == 1024
+    assert s.max_body_bytes == 1024 * 1024 * 1024
     assert s.idle_period_s == 10
     assert s.workers == 1
     assert s.cancel_runs is False
