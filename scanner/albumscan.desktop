@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Album scanner
+Comment=Scan photo-album pages and upload them to the album server
+Exec=albumscan
+Icon=scanner
+Terminal=false
+Categories=Graphics;Scanning;GTK;
+StartupWMClass=org.bit63.albumscan

@@ -9,6 +9,7 @@ images at 300 DPI, and one PDF per album.
 | Album assembly, 300 DPI export, PDF | working on synthetic albums |
 | `albumserver` upload API, storage and processing server | working; tested against the app's contract |
 | `android/` capture app (Kotlin) | working against a fake server and an emulator |
+| `scanner/` flatbed scanner app (Python, GTK 4) | working against SANE's test scanner and `albumserver` |
 
 ## Page pipeline
 
@@ -373,7 +374,8 @@ Settings come from a TOML file (`--config`, see
 [`deploy/albumserver.toml`](backend/deploy/albumserver.toml)) and from
 `ALBUMSERVER_<NAME>` environment variables, which win. An unknown or invalid
 setting stops the server, naming it. The main ones: `data_dir`, `host`
-(`127.0.0.1`), `port` (8080), `tls_cert`/`tls_key`, `idle_period_s` (10),
+(`127.0.0.1`), `port` (8080), `tls_cert`/`tls_key`, `max_body_mb` (1024,
+for high-resolution scans), `idle_period_s` (10),
 `workers` (1 page run at a time; each can use 1 to 2 GB), `cancel_runs`
 (false), `glare_detector` (`features` by default, `net` in the deployed
 file; it changes only the page warnings, never the composed page).
@@ -428,6 +430,46 @@ it listens on another address without TLS. Either:
   ```
 
 - Or set `tls_cert` and `tls_key` to serve HTTPS directly.
+
+## Scanner app
+
+`albumscan` (in `scanner/`) captures pages with a flatbed scanner instead of
+the phone: any scanner SANE finds (`scanimage -L`), such as a CanoScan LiDE
+on USB. Each scan becomes a shot uploaded to `albumserver` with the phone's
+requests, so a scanned album gets the same limits, processing and PDF, and an
+album can be part photographed, part scanned.
+
+```sh
+sudo apt install sane-utils python3-gi gir1.2-gtk-4.0 python3-pil
+albumserver token create scanner        # the app's own token
+make scan                               # or: cd scanner && python3 -m pip install --user -e . && albumscan
+```
+
+It runs on the system Python, because GTK 4's bindings come from the
+distribution; it does not need the backend or OpenCV. On first start it asks
+for the server's address and the token, then for an album: a new one, or one
+already on the server, which carries on at its last page.
+
+Space scans, Enter starts the next page, Escape cancels a scan; click a scan's
+thumbnail to delete it. Scans are colour, of the whole glass, at the
+scanner's highest colour resolution by default; any offered resolution from
+300 dpi up can be chosen. The server takes requests up to 1 GB
+(`max_body_mb`) and images up to 1 billion pixels, which covers a whole glass
+at 2400 dpi; higher resolutions are left out of the list. "Page turned" says how the page lies on the glass,
+per album, and turns every scan back. A page larger than the glass is scanned
+in overlapping parts, each a scan of the same page, and stitched. Every scan
+is kept in `~/.local/share/albumscan/outbox/` until the server has it, and
+uploads resume when the app starts again; settings are in
+`~/.config/albumscan/`. Below the scans, the previous and current pages show
+their processing state and warnings, with a button to open the print image.
+
+Scans carry `Software: albumscan <version>` in their EXIF. A page whose shots
+all carry it is processed in **scan mode**: its proportions are taken from
+its outline as they are, it is never treated as bent, and glare, shadow and
+single-coverage checks are skipped, since a scanner's light moves with its
+sensor. Stitching, uncovered areas, dropped shots and the sleeve step work as
+for photos. `source` and `scan_dpi` in the page metadata say which mode ran;
+`albumproc page --source photo|scan` overrides it.
 
 ## Known limits
 

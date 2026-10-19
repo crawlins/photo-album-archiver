@@ -2,7 +2,7 @@
 ANDROID_APP_ID := org.bit63.albumarchiver
 APK := android/app/build/outputs/apk/debug/app-debug.apk
 
-.PHONY: apk install-apk serve
+.PHONY: apk install-apk serve scan
 
 # Build the debug APK.
 apk:
@@ -25,3 +25,9 @@ serve:
 	@command -v albumserver >/dev/null || { echo "albumserver not found: run pip install -e backend"; exit 1; }
 	@echo "Phones can reach this server at:"; for ip in $$(hostname -I 2>/dev/null); do echo "  http://$$ip:$(PORT)"; done
 	ALBUMSERVER_HOST=0.0.0.0 ALBUMSERVER_PORT=$(PORT) albumserver serve
+
+# Start the flatbed scanner app (scanner/) on the system Python, which has
+# GTK 4's bindings. Needs sane-utils, python3-gi and gir1.2-gtk-4.0.
+scan:
+	@command -v scanimage >/dev/null || { echo "scanimage not found: install sane-utils"; exit 1; }
+	cd scanner && PYTHONPATH=src /usr/bin/python3 -m albumscan
