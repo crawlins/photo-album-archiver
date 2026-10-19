@@ -85,5 +85,5 @@ def test_debug_image_and_metadata_of_a_sleeved_page(tmp_path):
     assert main(["page", str(shot), "-o", str(tmp_path / "p.png"), "--debug", str(tmp_path / "debug"), "--curvature", "off"]) == 0
     assert (tmp_path / "debug" / "sleeve.jpg").exists()
     meta = json.loads((tmp_path / "p.json").read_text())
-    assert meta["schema_version"] == 5
+    assert meta["schema_version"] == 6
     assert meta["sleeve"]["mode"] == "auto" and meta["sleeve"]["sleeved"] and meta["sleeve"]["strip_side"] == "left"

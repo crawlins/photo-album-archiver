@@ -30,6 +30,7 @@ from .pdf import PdfPage, write_album_pdf
 from .pipeline import PageOptions, process_page
 from .printimage import FITS, FORMATS, ROTATIONS, PageWarning, PrintOptions, make_print_image, placeholder_image, write_print_image
 from .printsize import PageSize, parse_page_size
+from .scanmark import page_source
 
 PHOTO_EXTS = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
 MANIFEST = "album.json"
@@ -255,6 +256,15 @@ def _page_warnings(page_report: dict, threshold: float) -> list[dict]:
     return w
 
 
+def _for_source(warning: dict, page_report: dict) -> dict:
+    """A print warning in the words of how the page was captured: a scanner cannot be held closer."""
+    if warning["code"] == "low_resolution" and page_report.get("source") == "scan":
+        dpi = page_report.get("scan_dpi")
+        at = f" (scanned at {dpi:.0f} dpi)" if dpi else ""
+        warning = {**warning, "message": warning["message"].split(";")[0] + f"{at}; scan at a higher resolution"}
+    return warning
+
+
 def _page_options(base: PageOptions, page: PageSpec) -> PageOptions:
     """The pipeline options for one page: the album's, with the page's own curvature and sleeve settings."""
     if page.curvature is None and page.binding is None and page.sleeve is None and page.crop is None:
@@ -283,6 +293,8 @@ def _run_page(job: _Job) -> dict:
             raise RuntimeError(page.problem)
         popt = PrintOptions(**{**asdict(opt.print), "rotate": page.rotate, "fit": page.fit or opt.print.fit})
         page_opt = _page_options(opt.page, page)
+        source, dpi = page_source(page.photos)
+        page_opt = replace(page_opt, source=source, scan_dpi=dpi)
         process_key = _key({"photos": [_sha256_file(p) for p in page.photos], "page": asdict(page_opt), "version": __version__})
         print_key = _key({"process": process_key, "size": [page.size.a_in, page.size.b_in], "print": asdict(popt), "coverage": opt.coverage_threshold})
         processed = out / "pages" / f"{page.stem}.png"
@@ -324,7 +336,7 @@ def _run_page(job: _Job) -> dict:
                 "bleed_px": info.bleed_px,
                 "capture_dpi": info.capture_dpi,
                 "fit": info.fit_used,
-                "warnings": _page_warnings(page_report, opt.coverage_threshold) + [asdict(w) for w in info.warnings],
+                "warnings": _page_warnings(page_report, opt.coverage_threshold) + [_for_source(asdict(w), page_report) for w in info.warnings],
             }
         entry.update(status=status, dpi=popt.dpi, process_key=process_key, print_key=print_key, page_report=page_report, **fields)
         entry.update(processed=str(processed.relative_to(out)), print=str(printed.relative_to(out)))

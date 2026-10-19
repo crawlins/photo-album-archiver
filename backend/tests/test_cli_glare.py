@@ -26,7 +26,7 @@ def page(tmp_path_factory):
 def test_page_writes_metadata_next_to_the_image(page, capsys):
     _, _, out, d = page
     meta = json.loads(out.with_suffix(".json").read_text())
-    assert meta["schema_version"] == 5
+    assert meta["schema_version"] == 6
     assert {"glare", "uncovered", "warnings", "detector", "coverage", "glare_fraction", "inputs"} <= set(meta)
     assert all(isinstance(k, str) for k in meta["glare"]["per_shot"])
     assert not list(out.parent.glob("*.tmp"))
