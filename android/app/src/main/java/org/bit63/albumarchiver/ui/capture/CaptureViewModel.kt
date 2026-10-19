@@ -231,8 +231,9 @@ class CaptureViewModel(
                 _capturing.value = true
                 capture()
             } finally {
-                _capturing.value = false
+                // Unlock first: once capturing reads false, a press is taken.
                 captureLock.unlock()
+                _capturing.value = false
             }
         }
     }
