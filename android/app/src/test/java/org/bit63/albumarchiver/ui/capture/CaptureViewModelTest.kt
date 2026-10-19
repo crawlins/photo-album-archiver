@@ -373,8 +373,10 @@ class CaptureViewModelTest {
         env.db.ops().all().forEach { env.db.ops().delete(it.seq) }
         val p2 = env.repo.lastPage(albumId)!!.id
         env.repo.saveFeedback(listOf(singleWarning(p1, albumId), PageFeedback(p2, albumId, "done", null, "[]", env.clock.instant())))
-        val w = vm.workLeft.await { it.pending == 0 }
-        assertThat(w.warned).isEqualTo(1)
+        // Deleting the ops and saving the feedback are two writes, and the
+        // first can show on its own: wait for both rather than the first.
+        val w = vm.workLeft.await { it.pending == 0 && it.warned == 1 }
+        assertThat(w.ask).isTrue()
         env.repo.saveFeedback(listOf(PageFeedback(p1, albumId, "done", null, "[]", env.clock.instant())))
         assertThat(vm.workLeft.await { it.warned == 0 }.ask).isFalse()
     }
