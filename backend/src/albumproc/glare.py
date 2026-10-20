@@ -54,6 +54,12 @@ class GlareParams:
     # print borders on synthetic ones. Neither reaches the spec's targets.
     detector: str = "features"
     net_scale: float = 0.5  # the net runs on the detector's grid shrunk by this
+    # Input channels of the net: 3 (BGR) for the round-1 model; 4 adds the
+    # shot's low-frequency brightness and a whole-page input (the round-2
+    # model, glare-model-round-2 spec, 3.1 and 3.2).
+    net_inputs: int = 3
+    net_lowpass_frac: float = 0.1  # sigma of that brightness blur, as a fraction of the long side
+    net_page_scale: float = 0.25  # the whole-page input is the net's input shrunk by this
     # Hysteresis on the net's score, chosen on three validation pages the net
     # was not trained on (0.9/0.5 kept false alarms under 0.1% there).
     net_seed: float = 0.9
@@ -243,14 +249,42 @@ def net_score(img_bgr: np.ndarray, mask: np.ndarray | None = None, params: Glare
     img = np.where(m[..., None], img_bgr, 0).astype(np.uint8)
     size = (max(1, round(w * p.net_scale)), max(1, round(h * p.net_scale)))
     small = cv2.resize(img, size, interpolation=cv2.INTER_AREA)
-    blob = small.astype(np.float32).transpose(2, 0, 1)[None] / 255.0 - 0.5
+    blob = net_input(small, p.net_inputs, p.net_lowpass_frac)
     net = _load_net(str(NET_PATH))
     with _net_lock:  # one net object, shared by every thread
-        net.setInput(np.ascontiguousarray(blob, np.float32))
+        if p.net_inputs == 4:
+            sw, sh = size
+            tiny = cv2.resize(small, (max(8, round(sw * p.net_page_scale)), max(8, round(sh * p.net_page_scale))), interpolation=cv2.INTER_AREA)
+            net.setInput(blob, "image")
+            net.setInput(net_input(tiny, 4, p.net_lowpass_frac), "page")
+        else:
+            net.setInput(blob)
         logit = net.forward()[0, 0]
     prob = 1 / (1 + np.exp(-np.clip(logit, -30, 30)))
     prob = cv2.resize(prob.astype(np.float32), (w, h), interpolation=cv2.INTER_LINEAR)
     return np.where(m, prob, 0).astype(np.float32)
+
+
+def lowpass_brightness(img_bgr: np.ndarray, frac: float = 0.1) -> np.ndarray:
+    """The shot's lighting: its luminance (0..1) blurred with a sigma of ``frac`` of the long side.
+
+    Black outside the mask counts as dark, so the blur fades towards a
+    shot's edge; the net sees that at training time too.
+    """
+    g = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0
+    sigma = max(1.0, frac * max(img_bgr.shape[:2]))
+    return cv2.GaussianBlur(g, (0, 0), sigma)
+
+
+def net_input(small_bgr: np.ndarray, channels: int = 3, lowpass_frac: float = 0.1) -> np.ndarray:
+    """The net's input for a shot already at its scale: NCHW float32, BGR in -0.5..0.5, plus the lighting channel when ``channels`` is 4."""
+    bgr = small_bgr.astype(np.float32).transpose(2, 0, 1) / 255.0 - 0.5
+    if channels == 3:
+        return np.ascontiguousarray(bgr[None], np.float32)
+    if channels != 4:
+        raise ValueError(f"the net takes 3 or 4 input channels, not {channels}")
+    low = lowpass_brightness(small_bgr, lowpass_frac)[None] - 0.5
+    return np.ascontiguousarray(np.concatenate([bgr, low])[None], np.float32)
 
 
 def net_map(img_bgr: np.ndarray, mask: np.ndarray | None = None, params: GlareParams | None = None) -> GlareMap:

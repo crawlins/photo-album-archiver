@@ -170,6 +170,28 @@ detector from a single photo, and were replaced by the overlap coverage spec
 (`.kiro/specs/overlap-coverage/`): two shots over every part of a page,
 checked by the server and shown by the app.
 
+### Shooting for training
+
+Every album shot with the app is training data for the learned detector:
+the comparison between overlapping shots labels the glare, so nothing needs
+marking by hand (`.kiro/specs/glare-model-round-2/`). To make an album
+count:
+
+- Two shots covering every part of each page, as the app's overlap check
+  asks for anyway.
+- Where a soft sheen spreads over part of a page, take the second shot from
+  a clearly different angle (tilt the phone 15 to 20 degrees, or step to the
+  side). A sideways shift leaves the sheen where it was and labels nothing.
+- Include some pages with no glare at all (matte pages, or shot in diffuse
+  light), so false alarms are measured on real pages.
+- Aim for about 300 pages with 100 showing a spread sheen; later albums from
+  a different room or sleeve type count for more than more pages of the same
+  one.
+
+Then, on the server, `python tools/real_glare_data.py --album
+~/.local/share/albumserver/albums/<id> --out <labels dir>` labels the
+album in place and writes `labels.json` with each page's shares.
+
 ### Use
 
 ```sh
