@@ -167,3 +167,23 @@ def test_overlap_labels_ignore_light_falling_off_across_one_shot():
     shots[0] = np.clip(shots[0] * ramp, 0, 255).astype(np.uint8)  # one shot lit more towards the right
     assert (overlap_labels(shots, masks, relight=False)[0] == LABEL_GLARE).mean() > 0.2
     assert (overlap_labels(shots, masks)[0] == LABEL_GLARE).mean() < 0.01
+
+
+def test_net_input_builds_the_lighting_channel_for_a_round_2_model():
+    from albumproc.glare import lowpass_brightness, net_input
+
+    img = _print(120, 200, seed=2)
+    three = net_input(img, 3)
+    four = net_input(img, 4)
+    assert three.shape == (1, 3, 120, 200) and four.shape == (1, 4, 120, 200)
+    assert three.dtype == np.float32 and four.dtype == np.float32
+    assert np.array_equal(four[0, :3], three[0]) and -0.5 <= four.min() and four.max() <= 0.5
+    low = lowpass_brightness(img)
+    assert low.shape == (120, 200) and 0 <= low.min() and low.max() <= 1
+    assert np.allclose(four[0, 3], low - 0.5)
+    # Black outside a shot pulls the lighting channel down towards its edge, as the net was trained.
+    masked = img.copy()
+    masked[:, 150:] = 0
+    assert lowpass_brightness(masked)[60, 199] < lowpass_brightness(masked)[60, 100]
+    with pytest.raises(ValueError):
+        net_input(img, 5)
