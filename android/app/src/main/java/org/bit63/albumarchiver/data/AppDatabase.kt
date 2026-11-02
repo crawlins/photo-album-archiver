@@ -144,6 +144,13 @@ interface PageFeedbackDao {
     @Query("SELECT * FROM page_feedback") fun observeAll(): Flow<List<PageFeedback>>
     @Query("SELECT * FROM page_feedback WHERE pageId = :pageId") fun observe(pageId: String): Flow<PageFeedback?>
     @Query("DELETE FROM page_feedback WHERE pageId = :pageId") suspend fun delete(pageId: String)
+    /**
+     * Marks the page's feedback as waiting for a run, as the server does when
+     * one of its shots changes; [at] is when, so that a status fetched
+     * earlier does not overwrite it.
+     */
+    @Query("UPDATE page_feedback SET state = 'changed', fetchedAt = :at WHERE pageId = :pageId")
+    suspend fun markChanged(pageId: String, at: Instant)
 }
 
 @Database(

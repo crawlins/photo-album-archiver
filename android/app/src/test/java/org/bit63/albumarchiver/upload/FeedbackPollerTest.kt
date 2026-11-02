@@ -11,12 +11,14 @@ import kotlinx.coroutines.flow.flowOf
 import org.bit63.albumarchiver.TestEnv
 import org.bit63.albumarchiver.await
 import org.bit63.albumarchiver.blocking
+import org.bit63.albumarchiver.data.PageFeedback
 import org.bit63.albumarchiver.data.PageSize
 import org.bit63.albumarchiver.testing.FakeAlbumServer
 import org.junit.After
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import java.time.Instant
 
 @RunWith(RobolectricTestRunner::class)
 class FeedbackPollerTest {
@@ -65,6 +67,67 @@ class FeedbackPollerTest {
         assertThat(env.repo.observeWarnedPages(albumId).first()).isEmpty()  // s1 is still queued
         env.db.ops().all().forEach { env.db.ops().delete(it.seq) }
         assertThat(env.repo.observeWarnedPages(albumId).await { it.isNotEmpty() }).containsExactly(p1)
+    }
+
+    private fun status(albumId: String, p1: String, p2: String, state: String, warned: Boolean) {
+        val warnings = if (!warned) "[]" else """[{"code":"single_coverage","locations":["right"],
+            "regions":[{"bbox":[0.62,0,1,1],"location":"right","shots":[0],"shot_boxes":{"s1":[2210,0,4079,3071]}}],
+            "message":"Only one photo covers the right edge."}]"""
+        fake.statusPages[albumId] = """[
+            {"id":"$p1","number":1,"state":"$state","last_run":"2026-10-14T01:00:00Z","warnings":$warnings},
+            {"id":"$p2","number":2,"state":"empty","last_run":null,"warnings":[]}
+        ]"""
+    }
+
+    @Test fun `a page's old warnings stay hidden after new shots upload until the server has run it again`() = blocking {
+        val (albumId, p1, p2) = album()
+        val processor = UploadProcessor(env.db, env.settings, ServerAccess(env.settings), env.clock)
+        processor.drain()
+        poller.refresh(albumId)
+        assertThat(env.repo.observeWarnedPages(albumId).first()).containsExactly(p1)
+
+        // The user adds a shot to page 1 to cover the area.
+        env.repo.setTargetPage(albumId, p1)
+        env.repo.addShot(albumId, "s1b", env.written("s1b"))
+        assertThat(env.repo.observeWarnedPages(albumId).first()).isEmpty()  // queued
+
+        // Uploaded, but the status still holds the old run: no warning yet.
+        processor.drain()
+        assertThat(env.db.ops().all()).isEmpty()
+        assertThat(env.repo.observeWarnedPages(albumId).first()).isEmpty()
+        assertThat(env.repo.observeWarnedCounts().first()).isEmpty()
+
+        // The server reports it waiting, then processing, still with the old warnings.
+        status(albumId, p1, p2, "changed", warned = true)
+        poller.refresh(albumId)
+        assertThat(env.repo.observeWarnedPages(albumId).first()).isEmpty()
+        status(albumId, p1, p2, "processing", warned = true)
+        poller.refresh(albumId)
+        assertThat(env.repo.observeWarnedPages(albumId).first()).isEmpty()
+
+        // The run with the new shot is done: its own result is shown.
+        status(albumId, p1, p2, "done", warned = false)
+        poller.refresh(albumId)
+        assertThat(env.repo.observeWarnedPages(albumId).first()).isEmpty()
+        status(albumId, p1, p2, "done", warned = true)
+        poller.refresh(albumId)
+        assertThat(env.repo.observeWarnedPages(albumId).first()).containsExactly(p1)
+    }
+
+    @Test fun `a status asked for before a shot finished uploading does not bring old warnings back`() = blocking {
+        val (albumId, p1, _) = album()
+        env.db.ops().all().forEach { env.db.ops().delete(it.seq) }
+        val warning = """[{"code":"glare","message":"m","regions":[]}]"""
+        fun row(at: Long) = PageFeedback(p1, albumId, "done", "run1", warning, Instant.ofEpochSecond(at))
+        env.repo.saveFeedback(listOf(row(100)))
+        assertThat(env.repo.observeWarnedPages(albumId).first()).containsExactly(p1)
+        env.db.feedback().markChanged(p1, Instant.ofEpochSecond(200))
+        assertThat(env.repo.observeWarnedPages(albumId).first()).isEmpty()
+        env.repo.saveFeedback(listOf(row(150)))  // asked before the upload ended, answered after
+        assertThat(env.db.feedback().get(p1)!!.state).isEqualTo("changed")
+        assertThat(env.repo.observeWarnedPages(albumId).first()).isEmpty()
+        env.repo.saveFeedback(listOf(row(250)))  // asked afterwards: the server's word stands
+        assertThat(env.repo.observeWarnedPages(albumId).first()).containsExactly(p1)
     }
 
     @Test fun `no server or a failed request stores nothing and reports false`() = blocking {

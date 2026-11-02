@@ -39,6 +39,19 @@ class FeedbackTest {
         assertThat(parseWarnings("{}")).isEmpty()
     }
 
+    @Test fun `warnings are held back while the page waits for a run`() {
+        fun fb(state: String) = PageFeedback("p", "a", state, null, "[$single]", java.time.Instant.EPOCH)
+        for (state in listOf("changed", "ready", "processing")) {
+            assertThat(fb(state).settled).isFalse()
+            assertThat(fb(state).currentWarnings).isEmpty()
+            assertThat(fb(state).warnings).hasSize(1)  // still stored as sent
+        }
+        for (state in listOf("done", "failed", "empty")) {
+            assertThat(fb(state).settled).isTrue()
+            assertThat(fb(state).currentWarnings.single().code).isEqualTo(PageWarning.CODE_SINGLE)
+        }
+    }
+
     @Test fun `only area warnings mark a page`() {
         assertThat(parseWarnings("[$dropped]").marksPage()).isFalse()
         assertThat(parseWarnings("[$dropped,$uncovered]").marksPage()).isTrue()

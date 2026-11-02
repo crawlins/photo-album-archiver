@@ -28,9 +28,6 @@ data class AlbumWorkLeft(val warned: Int = 0, val pending: Int = 0, val serverCo
         ).joinToString(" and ", postfix = ".")
 }
 
-/** Server page states before a run's feedback is in. */
-private val UNFINISHED = setOf("changed", "ready", "processing")
-
 /**
  * The album's work left. A page with shots is pending while a shot is queued
  * for upload ([queued]), or its feedback has not come back from a run since
@@ -43,7 +40,7 @@ fun albumWorkLeft(pages: List<Page>, feedback: List<PageFeedback>, queued: Colle
     val withShots = pages.filter { it.shotCount > 0 }
     val pending = withShots.filter { p ->
         val fb = byPage[p.id]
-        p.id in queuedSet || fb == null || fb.state in UNFINISHED
+        p.id in queuedSet || fb == null || !fb.settled
     }.map { it.id }.toSet()
     val warnedLeft = withShots.count { it.id in warned && it.id !in pending }
     return AlbumWorkLeft(warnedLeft, pending.size, serverConfigured)

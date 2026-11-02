@@ -8,6 +8,7 @@ import org.bit63.albumarchiver.data.SettingsStore
 import org.bit63.albumarchiver.data.ShotState
 import org.bit63.albumarchiver.data.UploadOp
 import java.io.File
+import java.time.Clock
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -20,6 +21,7 @@ class UploadProcessor(
     private val db: AppDatabase,
     private val settings: SettingsStore,
     private val server: ServerAccess,
+    private val clock: Clock = Clock.systemUTC(),
 ) {
     enum class Outcome {
         /** The queue is empty. */
@@ -50,7 +52,10 @@ class UploadProcessor(
                 return Outcome.DONE
             }
             when (send(client, op)) {
-                Step.DONE -> ops.delete(op.seq)
+                Step.DONE -> {
+                    ops.delete(op.seq)
+                    changedPage(op)?.let { db.feedback().markChanged(it, clock.instant()) }
+                }
                 Step.DROP -> {
                     Log.w(TAG, "Dropped ${op.kind} for album ${op.albumId} shot ${op.shotId}")
                     ops.delete(op.seq)
@@ -98,6 +103,16 @@ class UploadProcessor(
             is ApiResult.HttpError -> if (r.code == 404) Step.DROP else classify(r, isShot = false)
             else -> classify(r, isShot = false)
         }
+    }
+
+    /**
+     * The page whose shots [op] changed on the server: its warnings are out
+     * of date until the server has run the page again, so they are held back
+     * from now on rather than from the next status poll.
+     */
+    private fun changedPage(op: UploadOp): String? = when (op.kind) {
+        OpKind.PUT_SHOT, OpKind.DELETE_SHOT, OpKind.MOVE_SHOTS -> op.pageId
+        else -> null
     }
 
     private fun classify(result: ApiResult<*>, isShot: Boolean): Step = when (result) {

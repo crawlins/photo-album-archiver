@@ -23,7 +23,7 @@ private val ANOTHER_SHOT_CODES = setOf(PageWarning.CODE_SINGLE, PageWarning.CODE
  * shooting.
  */
 fun otherWarnedPages(pages: List<Page>, feedback: List<PageFeedback>, warned: Set<String>, targetPageId: String?): List<Page> {
-    val asking = feedback.filter { fb -> fb.warnings.any { it.code in ANOTHER_SHOT_CODES } }.map { it.pageId }.toSet()
+    val asking = feedback.filter { fb -> fb.currentWarnings.any { it.code in ANOTHER_SHOT_CODES } }.map { it.pageId }.toSet()
     return pages.filter { it.id != targetPageId && it.id in warned && it.id in asking }.sortedBy { it.position }
 }
 

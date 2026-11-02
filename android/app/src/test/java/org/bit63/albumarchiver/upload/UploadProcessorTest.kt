@@ -51,6 +51,22 @@ class UploadProcessorTest {
         assertThat(queue()).isEmpty()
     }
 
+    @Test fun `an uploaded shot marks its page's feedback as waiting for a run`() = blocking {
+        val a = album()
+        val shot = shoot(a.id, "s1")
+        val p1 = shot.page.id
+        val p2 = (repo.startNextPage(a.id) as NextPageResult.Started).page.id
+        val warning = """[{"code":"glare","message":"m","regions":[]}]"""
+        repo.saveFeedback(listOf(
+            org.bit63.albumarchiver.data.PageFeedback(p1, a.id, "done", null, warning, java.time.Instant.EPOCH),
+            org.bit63.albumarchiver.data.PageFeedback(p2, a.id, "done", null, warning, java.time.Instant.EPOCH),
+        ))
+        assertThat(processor.drain()).isEqualTo(UploadProcessor.Outcome.DONE)
+        assertThat(env.db.feedback().get(p1)!!.state).isEqualTo("changed")
+        assertThat(env.db.feedback().get(p1)!!.fetchedAt).isGreaterThan(java.time.Instant.EPOCH)
+        assertThat(env.db.feedback().get(p2)!!.state).isEqualTo("done")  // no shot of it changed
+    }
+
     @Test fun `a new page's metadata is sent only after every shot of the page before it`() = blocking {
         val a = album()
         shoot(a.id, "s1")
