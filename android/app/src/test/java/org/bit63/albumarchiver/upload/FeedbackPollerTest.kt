@@ -87,8 +87,7 @@ class FeedbackPollerTest {
         assertThat(env.repo.observeWarnedPages(albumId).first()).containsExactly(p1)
 
         // The user adds a shot to page 1 to cover the area.
-        env.repo.setTargetPage(albumId, p1)
-        env.repo.addShot(albumId, "s1b", env.written("s1b"))
+        env.repo.addShot(albumId, "s1b", env.written("s1b"), pageId = p1)
         assertThat(env.repo.observeWarnedPages(albumId).first()).isEmpty()  // queued
 
         // Uploaded, but the status still holds the old run: no warning yet.
