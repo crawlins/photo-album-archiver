@@ -86,14 +86,14 @@ class AlbumRepository(
      */
     fun observeWarnedPages(albumId: String): Flow<Set<String>> =
         combine(observeFeedback(albumId), observePendingPages(albumId)) { fb, pending ->
-            fb.filter { it.pageId !in pending && it.warnings.marksPage() }.map { it.pageId }.toSet()
+            fb.filter { it.pageId !in pending && it.currentWarnings.marksPage() }.map { it.pageId }.toSet()
         }
 
     /** The number of red-dot pages of every album that has one, by album id (single-shot glare spec, Requirement 4.1). */
     fun observeWarnedCounts(): Flow<Map<String, Int>> =
         combine(feedback.observeAll(), ops.observeAllPendingPages()) { fb, pending ->
             val queued = pending.toSet()
-            fb.filter { it.pageId !in queued && it.warnings.marksPage() }.groupingBy { it.albumId }.eachCount()
+            fb.filter { it.pageId !in queued && it.currentWarnings.marksPage() }.groupingBy { it.albumId }.eachCount()
         }
 
     /** The page new shots go to: the album's target page when set and still there, else its last page (Requirement 4.7). */
@@ -102,8 +102,18 @@ class AlbumRepository(
             ps.firstOrNull { it.id == album?.targetPageId } ?: ps.lastOrNull()
         }
 
+    /**
+     * Stores fetched feedback. A row whose stored copy is newer than it (the
+     * page was marked changed after the status was requested) is skipped, so
+     * a status in flight while a shot finished uploading does not bring the
+     * old warnings back.
+     */
     suspend fun saveFeedback(rows: List<PageFeedback>) {
-        if (rows.isNotEmpty()) feedback.upsert(rows)
+        if (rows.isEmpty()) return
+        db.withTransaction {
+            val fresh = rows.filter { row -> feedback.get(row.pageId)?.let { it.fetchedAt <= row.fetchedAt } ?: true }
+            if (fresh.isNotEmpty()) feedback.upsert(fresh)
+        }
     }
 
     /** Makes [pageId] the target page, or the last page again with null; false when the page is not the album's. */

@@ -38,6 +38,9 @@ class FeedbackPoller(
     /** Fetches the status once; false when no server is configured or the request failed. */
     suspend fun refresh(albumId: String): Boolean {
         val client = server.client() ?: return false
+        // Stamped with when it was asked for, so that a page marked changed
+        // while the request was out keeps its mark (see AlbumRepository.saveFeedback).
+        val asked = clock.instant()
         val status = when (val r = client.albumStatus(albumId)) {
             is ApiResult.Ok -> r.value
             else -> {
@@ -46,11 +49,10 @@ class FeedbackPoller(
             }
         }
         val known = repo.pages(albumId).map { it.id }.toSet()
-        val now = clock.instant()
         repo.saveFeedback(
             status.pages.filter { it.id in known }.map {
                 PageFeedback(
-                    it.id, albumId, it.state, it.lastRun, warningsJsonOf(it.warnings), now,
+                    it.id, albumId, it.state, it.lastRun, warningsJsonOf(it.warnings), asked,
                     preview = it.preview, outlinesJson = outlinesJsonOf(it.outlines),
                 )
             },

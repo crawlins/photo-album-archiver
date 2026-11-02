@@ -115,7 +115,8 @@ class PageViewModel(
         selected,
     ) { page, shots, fb, pending, sel ->
         val uploaded = fb != null && pageId !in pending
-        val warnings = if (uploaded) fb!!.warnings else emptyList()
+        // Held back until the server has run the page with its new shots too.
+        val warnings = if (uploaded) fb!!.currentWarnings else emptyList()
         val byId = shots.map { it.id }
         val outlines = if (uploaded) parseOutlines(fb!!.outlinesJson).mapNotNull { (id, pts) ->
             val n = byId.indexOf(id)

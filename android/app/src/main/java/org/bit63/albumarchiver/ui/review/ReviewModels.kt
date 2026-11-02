@@ -155,11 +155,15 @@ class ReviewViewModel(
         feedback?.start(viewModelScope, flowOf(albumId), uploadRunning)
     }
 
-    /** The current page's warnings, when its shots have all been uploaded; empty otherwise (overlap coverage Requirements 4.5, 4.12). */
+    /**
+     * The current page's warnings, when its shots have all been uploaded and
+     * the server has run the page since; empty otherwise (overlap coverage
+     * Requirements 4.5, 4.12).
+     */
     val warnings: StateFlow<List<PageWarning>> = combine(
         _position.map { it?.pageId }.distinctUntilChanged().flatMapLatest { id -> if (id == null) flowOf(null) else repo.observePageFeedback(id) },
         repo.observePendingPages(albumId),
-    ) { fb, pending -> if (fb == null || fb.pageId in pending) emptyList() else fb.warnings }
+    ) { fb, pending -> if (fb == null || fb.pageId in pending) emptyList() else fb.currentWarnings }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     /** Makes the page shown the page new shots go to (Requirement 4.7). */

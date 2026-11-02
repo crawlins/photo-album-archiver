@@ -41,7 +41,7 @@ open class AppContainer(
     val clock: Clock = Clock.systemUTC(),
 ) {
     val server = ServerAccess(settings)
-    val uploadProcessor = UploadProcessor(db, settings, server)
+    val uploadProcessor = UploadProcessor(db, settings, server, clock)
 
     /** Starts uploads after a change. Tests override this with a fake. */
     open val uploadKicker: UploadKicker by lazy { scheduler }

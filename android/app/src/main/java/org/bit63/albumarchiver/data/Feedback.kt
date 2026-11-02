@@ -36,6 +36,23 @@ data class PageFeedback(
     @ColumnInfo(defaultValue = "{}") val outlinesJson: String = "{}",
 ) {
     val warnings: List<PageWarning> get() = parseWarnings(warningsJson)
+
+    /**
+     * Whether the server has finished with the page since its shots last
+     * changed. Until it has, [warnings] are those of the run before the
+     * change, about shots the user may just have added to fix them, so they
+     * are not shown or counted.
+     */
+    val settled: Boolean get() = state !in UNFINISHED_STATES
+
+    /** The warnings to show: none while the page waits for its next run. */
+    val currentWarnings: List<PageWarning> get() = if (settled) warnings else emptyList()
+
+    companion object {
+        /** Server page states while a change to the page's shots waits for a run (the server's `PENDING`). */
+        const val STATE_CHANGED = "changed"
+        val UNFINISHED_STATES = setOf(STATE_CHANGED, "ready", "processing")
+    }
 }
 
 /** One area a warning is about, with its box in each photo's own pixels, keyed by shot id. */

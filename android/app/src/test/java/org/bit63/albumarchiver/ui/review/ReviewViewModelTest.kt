@@ -211,6 +211,20 @@ class ReviewViewModelTest {
         vm.warnings.await { it.isEmpty() }
     }
 
+    @Test fun `the page's old warnings are hidden until the server has run it with its new shots`() = blocking {
+        album(2, 3)
+        uploaded()
+        env.repo.saveFeedback(listOf(PageFeedback(pageIds[1], albumId, "changed", null, singleCoverage, env.clock.instant())))
+        val vm = review(1, 1)
+        Thread.sleep(300)
+        assertThat(vm.warnings.value).isEmpty()
+        env.repo.saveFeedback(listOf(PageFeedback(pageIds[1], albumId, "processing", null, singleCoverage, env.clock.instant())))
+        Thread.sleep(300)
+        assertThat(vm.warnings.value).isEmpty()
+        env.repo.saveFeedback(listOf(PageFeedback(pageIds[1], albumId, "done", null, singleCoverage, env.clock.instant())))
+        assertThat(vm.warnings.await { it.isNotEmpty() }.single().code).isEqualTo("single_coverage")
+    }
+
     @Test fun `add shots to this page makes it the album's target page`() = blocking {
         album(2, 3)
         val vm = review(0)
